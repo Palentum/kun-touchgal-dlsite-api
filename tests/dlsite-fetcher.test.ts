@@ -60,6 +60,31 @@ const metaDir = resolve(process.cwd(), 'meta')
 const readMeta = (filename: string) =>
   readFileSync(resolve(metaDir, filename), 'utf8')
 
+const APPX_HTML = `
+<!doctype html>
+<html lang="zh-CN">
+  <body>
+    <h1 id="work_name">神待ちサナちゃん</h1>
+    <table id="work_outline">
+      <tr>
+        <th>贩卖日</th>
+        <td><a href="https://www.dlsite.com/appx/new/=/year/2024/mon/08/day/30">2024年08月30日</a></td>
+      </tr>
+      <tr>
+        <th>メーカー</th>
+        <td id="work_maker">
+          <a href="https://www.dlsite.com/appx/circle/profile/=/maker_id/RG00000001.html">测试厂商</a>
+        </td>
+      </tr>
+    </table>
+    <div class="main_genre">
+      <a href="/appx/fsr/=/genre/001">手机游戏</a>
+      <a href="/appx/fsr/=/genre/002">RPG</a>
+    </div>
+  </body>
+</html>
+`
+
 const htmlCache = {
   RJ01527759: readMeta('RJ01527759_RJ.html'),
   RJ01341035: readMeta('RJ01341035_ai.html'),
@@ -81,6 +106,7 @@ const routeMap: Record<RouteKey, RouteMock> = {
   'ai/RJ01341035': { html: htmlCache.RJ01341035 },
   'maniax/RJ01466244': { html: htmlCache.RJ01466244, redirectSite: 'aix' },
   'aix/RJ01466244': { html: htmlCache.RJ01466244 },
+  'appx/RJ01068983': { html: APPX_HTML },
   'pro/VJ01002419': { html: htmlCache.VJ01002419 }
 }
 
@@ -103,7 +129,7 @@ const mockFetch = async (input: RequestInfo | URL): Promise<Response> => {
   const key = `${site}/${code.toUpperCase()}` as RouteKey
   const route = routeMap[key]
   if (!route) {
-    throw new Error(`Missing mock data for ${key}`)
+    return new MockResponse('', url.toString(), 404, 'Not Found')
   }
 
   let finalUrl = url.toString()
@@ -151,6 +177,18 @@ test('detects AIx site redirects', async () => {
     expect(data.title_default).toBe('孤独少女との50日間')
     expect(data.circle_name).toBe('こんなに大きくなりました')
     expect(data.circle_link).toContain('/aix/circle/profile')
+  })
+})
+
+test('supports RJ catalog entries hosted on appx', async () => {
+  await runWithMockedFetch(async () => {
+    const data = await fetchDlsiteData('RJ01068983')
+    expect(data.rj_code).toBe('RJ01068983')
+    expect(data.title_default).toBe('神待ちサナちゃん')
+    expect(data.release_date).toBe('2024-08-30')
+    expect(data.circle_name).toBe('测试厂商')
+    expect(data.circle_link).toContain('/appx/circle/profile')
+    expect(data.tags).toBe('手机游戏,RPG')
   })
 })
 

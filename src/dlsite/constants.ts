@@ -4,6 +4,7 @@ export const DLSITE_PRODUCT_BASE: Record<DlsiteSite, string> = {
   maniax: 'https://www.dlsite.com/maniax/work/=/product_id',
   ai: 'https://www.dlsite.com/ai/work/=/product_id',
   aix: 'https://www.dlsite.com/aix/work/=/product_id',
+  appx: 'https://www.dlsite.com/appx/work/=/product_id',
   pro: 'https://www.dlsite.com/pro/work/=/product_id'
 }
 

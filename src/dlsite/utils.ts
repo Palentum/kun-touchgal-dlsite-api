@@ -22,6 +22,7 @@ export const detectSiteFromUrl = (url: string): DlsiteSite | undefined => {
   try {
     const parsed = new URL(url)
     if (parsed.hostname.includes('dlsite.com')) {
+      if (parsed.pathname.includes('/appx/')) return 'appx'
       if (parsed.pathname.includes('/aix/')) return 'aix'
       if (parsed.pathname.includes('/ai/')) return 'ai'
       if (parsed.pathname.includes('/pro/')) return 'pro'
@@ -40,7 +41,7 @@ export const buildProductUrl = (
 
 export const getCandidateSites = (code: string): DlsiteSite[] => {
   if (code.startsWith('RJ')) {
-    return ['maniax', 'ai', 'aix']
+    return ['maniax', 'ai', 'aix', 'appx']
   }
   if (code.startsWith('VJ')) {
     return ['pro']

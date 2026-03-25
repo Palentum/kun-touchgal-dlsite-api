@@ -13,7 +13,12 @@ test('cleanDlsiteTitle removes decorative brackets', () => {
 })
 
 test('getCandidateSites prioritises RJ then AI domains', () => {
-  expect(getCandidateSites('RJ012345')).toEqual(['maniax', 'ai', 'aix'])
+  expect(getCandidateSites('RJ012345')).toEqual([
+    'maniax',
+    'ai',
+    'aix',
+    'appx'
+  ])
   expect(getCandidateSites('VJ01002419')).toEqual(['pro'])
 })
 
