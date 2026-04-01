@@ -1,6 +1,7 @@
 import { parseHTML } from 'linkedom'
 import {
   DL_SUPPORTED_LOCALES,
+  DLSITE_API_BASE,
   REQUEST_HEADERS,
   ADULT_COOKIE
 } from './constants'
@@ -104,6 +105,75 @@ const fetchDocumentForSite = async (
   return null
 }
 
+interface ApiProductData {
+  work_name?: string
+  maker_name?: string
+  maker_name_en?: string
+  maker_id?: string
+  regist_date?: string
+  genres?: Array<{ name: string }>
+  site_id?: string
+}
+
+const fetchProductApi = async (
+  code: string,
+  locale: DlsiteLocale,
+  sites: DlsiteSite[]
+): Promise<ApiProductData | null> => {
+  for (const site of sites) {
+    const url = `${DLSITE_API_BASE[site]}?workno=${code}&locale=${locale}`
+    const response = await fetch(url, createRequestInit())
+    if (!response.ok) continue
+
+    const data = (await response.json()) as ApiProductData[]
+    if (data?.[0]) return data[0]
+  }
+  return null
+}
+
+const fetchDlsiteDataFromApi = async (
+  code: string,
+  candidateSites: DlsiteSite[]
+): Promise<DlsiteApiResponse> => {
+  const [dataCn, dataJp, dataEn] = await Promise.all([
+    fetchProductApi(code, DL_SUPPORTED_LOCALES.cn, candidateSites),
+    fetchProductApi(code, DL_SUPPORTED_LOCALES.jp, candidateSites),
+    fetchProductApi(code, DL_SUPPORTED_LOCALES.en, candidateSites)
+  ])
+
+  if (!dataCn && !dataJp) {
+    throw new Error('DLSITE_PRODUCT_NOT_FOUND')
+  }
+
+  const primary = dataCn ?? dataJp!
+  const titleCn = cleanDlsiteTitle(dataCn?.work_name)
+  const titleJp = cleanDlsiteTitle(dataJp?.work_name)
+  const titleEn = cleanDlsiteTitle(dataEn?.work_name)
+
+  const releaseDate = primary.regist_date
+    ? primary.regist_date.slice(0, 10)
+    : undefined
+
+  const tags = primary.genres?.map((g) => g.name).join(',') || undefined
+
+  const makerId = primary.maker_id
+  const siteId = primary.site_id ?? candidateSites[0]
+  const circleLink = makerId
+    ? `https://www.dlsite.com/${siteId}/circle/profile/=/maker_id/${makerId}.html`
+    : undefined
+
+  return {
+    rj_code: code,
+    title_default: titleCn || titleJp || code,
+    title_jp: titleJp || undefined,
+    title_en: titleEn || undefined,
+    release_date: releaseDate,
+    tags,
+    circle_name: primary.maker_name?.trim() || undefined,
+    circle_link: circleLink
+  }
+}
+
 export const fetchDlsiteData = async (
   code: string
 ): Promise<DlsiteApiResponse> => {
@@ -127,6 +197,12 @@ export const fetchDlsiteData = async (
   }
 
   const docCn = primaryDoc.document
+
+  // SPA pages (e.g. aix) lack server-rendered metadata — fall back to JSON API
+  if (!docCn.querySelector('#work_outline')) {
+    return fetchDlsiteDataFromApi(normalizedCode, candidateSites)
+  }
+
   const releaseDate = extractReleaseDate(docCn)
   const tags = extractTags(docCn)
   const circleInfo = extractCircle(docCn)
@@ -158,7 +234,7 @@ export const fetchDlsiteData = async (
 
   const result: DlsiteApiResponse = {
     rj_code: normalizedCode,
-    title_default: cleanDlsiteTitle(extractTitle(docCn)) || normalizedCode,
+    title_default: cleanTitle(docCn) || normalizedCode,
     title_jp: cleanTitle(docJp),
     title_en: cleanTitle(docEn),
     release_date: releaseDate,

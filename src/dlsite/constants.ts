@@ -22,6 +22,14 @@ export const ADULT_COOKIE = 'adult_checked=1'
 
 export const SUPPORTED_PREFIXES = ['RJ', 'VJ', 'BJ']
 
+export const DLSITE_API_BASE: Record<DlsiteSite, string> = {
+  maniax: 'https://www.dlsite.com/maniax/api/=/product.json',
+  ai: 'https://www.dlsite.com/ai/api/=/product.json',
+  aix: 'https://www.dlsite.com/aix/api/=/product.json',
+  appx: 'https://www.dlsite.com/appx/api/=/product.json',
+  pro: 'https://www.dlsite.com/pro/api/=/product.json'
+}
+
 export const DL_SUPPORTED_LOCALES = {
   cn: 'zh_CN',
   jp: 'ja_JP',
