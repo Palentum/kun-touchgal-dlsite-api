@@ -11,7 +11,7 @@
     "preview": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest watch",
-    "start": "pm2 start ecosystem.config.cjs",
+    "start": "pm2 startOrReload ecosystem.config.cjs --update-env",
     "stop": "pm2 delete kun-touchgal-dlsite-api",
     "deploy:build": "esno scripts/deployBuild.ts"
   },
