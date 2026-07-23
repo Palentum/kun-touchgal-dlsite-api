@@ -17,7 +17,8 @@ test('getCandidateSites prioritises RJ then AI domains', () => {
     'maniax',
     'ai',
     'aix',
-    'appx'
+    'appx',
+    'girls'
   ])
   expect(getCandidateSites('VJ01002419')).toEqual(['pro'])
 })

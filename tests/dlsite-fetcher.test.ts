@@ -85,6 +85,31 @@ const APPX_HTML = `
 </html>
 `
 
+const GIRLS_HTML = `
+<!doctype html>
+<html lang="zh-CN">
+  <body>
+    <h1 id="work_name">王子様の耳元でおやすみ</h1>
+    <table id="work_outline">
+      <tr>
+        <th>贩卖日</th>
+        <td><a href="https://www.dlsite.com/girls/new/=/year/2018/mon/01/day/26">2018年01月26日</a></td>
+      </tr>
+      <tr>
+        <th>社团名</th>
+        <td id="work_maker">
+          <a href="https://www.dlsite.com/girls/circle/profile/=/maker_id/RG13604.html">测试社团</a>
+        </td>
+      </tr>
+    </table>
+    <div class="main_genre">
+      <a href="/girls/fsr/=/genre/001">乙女向</a>
+      <a href="/girls/fsr/=/genre/002">治愈</a>
+    </div>
+  </body>
+</html>
+`
+
 const htmlCache = {
   RJ01527759: readMeta('RJ01527759_RJ.html'),
   RJ01341035: readMeta('RJ01341035_ai.html'),
@@ -97,6 +122,8 @@ type RouteKey = `${string}/${string}`
 interface RouteMock {
   html: string
   redirectSite?: string
+  // Real DLsite drops the ?locale= query on cross-section redirects (e.g. girls)
+  dropLocaleOnRedirect?: boolean
 }
 
 const routeMap: Record<RouteKey, RouteMock> = {
@@ -107,6 +134,12 @@ const routeMap: Record<RouteKey, RouteMock> = {
   'maniax/RJ01466244': { html: htmlCache.RJ01466244, redirectSite: 'aix' },
   'aix/RJ01466244': { html: htmlCache.RJ01466244 },
   'appx/RJ01068983': { html: APPX_HTML },
+  'maniax/RJ202395': {
+    html: GIRLS_HTML,
+    redirectSite: 'girls',
+    dropLocaleOnRedirect: true
+  },
+  'girls/RJ202395': { html: GIRLS_HTML },
   'pro/VJ01002419': { html: htmlCache.VJ01002419 }
 }
 
@@ -134,7 +167,13 @@ const mockFetch = async (input: RequestInfo | URL): Promise<Response> => {
 
   let finalUrl = url.toString()
   if (route.redirectSite && route.redirectSite !== site) {
-    finalUrl = finalUrl.replace(`/${site}/`, `/${route.redirectSite}/`)
+    const redirected = new URL(
+      finalUrl.replace(`/${site}/`, `/${route.redirectSite}/`)
+    )
+    if (route.dropLocaleOnRedirect) {
+      redirected.searchParams.delete('locale')
+    }
+    finalUrl = redirected.toString()
   }
 
   return new MockResponse(route.html, finalUrl)
@@ -189,6 +228,18 @@ test('supports RJ catalog entries hosted on appx', async () => {
     expect(data.circle_name).toBe('测试厂商')
     expect(data.circle_link).toContain('/appx/circle/profile')
     expect(data.tags).toBe('手机游戏,RPG')
+  })
+})
+
+test('follows redirects to the girls section (locale dropped on redirect)', async () => {
+  await runWithMockedFetch(async () => {
+    const data = await fetchDlsiteData('RJ202395')
+    expect(data.rj_code).toBe('RJ202395')
+    expect(data.title_default).toBe('王子様の耳元でおやすみ')
+    expect(data.release_date).toBe('2018-01-26')
+    expect(data.circle_name).toBe('测试社团')
+    expect(data.circle_link).toContain('/girls/circle/profile')
+    expect(data.tags).toBe('乙女向,治愈')
   })
 })
 

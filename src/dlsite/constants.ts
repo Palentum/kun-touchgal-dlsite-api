@@ -5,7 +5,8 @@ export const DLSITE_PRODUCT_BASE: Record<DlsiteSite, string> = {
   ai: 'https://www.dlsite.com/ai/work/=/product_id',
   aix: 'https://www.dlsite.com/aix/work/=/product_id',
   appx: 'https://www.dlsite.com/appx/work/=/product_id',
-  pro: 'https://www.dlsite.com/pro/work/=/product_id'
+  pro: 'https://www.dlsite.com/pro/work/=/product_id',
+  girls: 'https://www.dlsite.com/girls/work/=/product_id'
 }
 
 export const DLSITE_HOST = 'https://www.dlsite.com'
@@ -27,7 +28,8 @@ export const DLSITE_API_BASE: Record<DlsiteSite, string> = {
   ai: 'https://www.dlsite.com/ai/api/=/product.json',
   aix: 'https://www.dlsite.com/aix/api/=/product.json',
   appx: 'https://www.dlsite.com/appx/api/=/product.json',
-  pro: 'https://www.dlsite.com/pro/api/=/product.json'
+  pro: 'https://www.dlsite.com/pro/api/=/product.json',
+  girls: 'https://www.dlsite.com/girls/api/=/product.json'
 }
 
 export const DL_SUPPORTED_LOCALES = {
