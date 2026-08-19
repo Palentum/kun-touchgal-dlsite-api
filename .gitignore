@@ -14,3 +14,24 @@ dist/
 .vscode/*
 !.vscode/extensions.json
 .idea
+
+# Dev workspace (local only)
+CLAUDE.md
+.claude/
+docs/
+
+# Secrets
+.env
+.env.*
+proxy/
+
+# User data
+userdata/
+session/
+
+# Personal documents
+*_article
+*.docx
+*.doc
+*.xlsx
+*.csv
