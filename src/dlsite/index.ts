@@ -84,25 +84,54 @@ const fetchSecondaryDocument = async (
   return doc?.document ?? null
 }
 
+// DLsite redirects works to whichever section owns them — including sections
+// this service has no constant for (bl, books, …) — and drops ?locale= on the
+// way. Retry against the *resolved* URL so section names never have to be known.
+const withLocale = (url: string, locale: DlsiteLocale): string | null => {
+  try {
+    const parsed = new URL(url)
+    const isDlsite =
+      parsed.hostname === 'dlsite.com' ||
+      parsed.hostname.endsWith('.dlsite.com')
+    if (!isDlsite) return null
+    parsed.searchParams.set('locale', locale)
+    return parsed.toString()
+  } catch {
+    return null
+  }
+}
+
 const fetchDocumentForSite = async (
   code: string,
   locale: DlsiteLocale,
   site: DlsiteSite
 ): Promise<DocumentResult | null> => {
+  let requestUrl = buildProductUrl(code, locale, site)
   let currentSite = site
+  const attempted = new Set<string>()
+  let result: DocumentResult | null = null
+
   for (let hop = 0; hop < 3; hop += 1) {
-    const requestUrl = buildProductUrl(code, locale, currentSite)
-    const result = await requestDocument(requestUrl, currentSite)
+    attempted.add(requestUrl)
+    result = await requestDocument(requestUrl, currentSite)
     if (!result) {
       return null
     }
-    const finalLocale = getLocaleFromUrl(result.url)
-    if (result.site === currentSite && finalLocale === locale) {
-      return result
+    if (getLocaleFromUrl(result.url) === locale) {
+      break
     }
+
+    const next = withLocale(result.url, locale)
+    if (!next || attempted.has(next)) {
+      break
+    }
+    requestUrl = next
     currentSite = result.site
   }
-  return null
+
+  // Whatever the loop settled on — including a wrong-locale page or the hop cap
+  // — beats reporting a 404 for a product whose page is already in hand
+  return result
 }
 
 interface ApiProductData {
@@ -208,14 +237,16 @@ export const fetchDlsiteData = async (
   const circleInfo = extractCircle(docCn)
   const editionLinks = extractEditionLinks(docCn)
 
+  // Fall back to the resolved primary URL, not the requested site — the page may
+  // live in a section with no DLSITE_PRODUCT_BASE entry
   const jpUrl = ensureLocaleUrl(
-    editionLinks.jp ?? undefined,
+    editionLinks.jp ?? primaryDoc.url,
     DL_SUPPORTED_LOCALES.jp,
     normalizedCode,
     primaryDoc.site
   )
   const enUrl = ensureLocaleUrl(
-    editionLinks.en ?? undefined,
+    editionLinks.en ?? primaryDoc.url,
     DL_SUPPORTED_LOCALES.en,
     normalizedCode,
     primaryDoc.site

@@ -110,6 +110,31 @@ const GIRLS_HTML = `
 </html>
 `
 
+const BL_HTML = `
+<!doctype html>
+<html lang="zh-CN">
+  <body>
+    <h1 id="work_name">新騎生誕記念作品 弟のケツマンコ開発日記</h1>
+    <table id="work_outline">
+      <tr>
+        <th>发售日</th>
+        <td><a href="https://www.dlsite.com/bl/new/=/year/2023/mon/11/day/27">2023年11月27日</a></td>
+      </tr>
+      <tr>
+        <th>社团名</th>
+        <td id="work_maker">
+          <a href="https://www.dlsite.com/bl/circle/profile/=/maker_id/RG54654.html">新騎の4回戦目</a>
+        </td>
+      </tr>
+    </table>
+    <div class="main_genre">
+      <a href="/bl/fsr/=/genre/001">ASMR</a>
+      <a href="/bl/fsr/=/genre/002">BL</a>
+    </div>
+  </body>
+</html>
+`
+
 const htmlCache = {
   RJ01527759: readMeta('RJ01527759_RJ.html'),
   RJ01341035: readMeta('RJ01341035_ai.html'),
@@ -124,6 +149,8 @@ interface RouteMock {
   redirectSite?: string
   // Real DLsite drops the ?locale= query on cross-section redirects (e.g. girls)
   dropLocaleOnRedirect?: boolean
+  // Pathological section that never echoes back the requested locale
+  dropLocaleAlways?: boolean
 }
 
 const routeMap: Record<RouteKey, RouteMock> = {
@@ -140,10 +167,21 @@ const routeMap: Record<RouteKey, RouteMock> = {
     dropLocaleOnRedirect: true
   },
   'girls/RJ202395': { html: GIRLS_HTML },
+  'maniax/RJ01124081': {
+    html: BL_HTML,
+    redirectSite: 'bl',
+    dropLocaleOnRedirect: true
+  },
+  'bl/RJ01124081': { html: BL_HTML },
+  'maniax/RJ00000001': { html: BL_HTML, dropLocaleAlways: true },
   'pro/VJ01002419': { html: htmlCache.VJ01002419 }
 }
 
+let fetchCount = 0
+const requestedUrls = new Set<string>()
+
 const mockFetch = async (input: RequestInfo | URL): Promise<Response> => {
+  fetchCount += 1
   const target =
     typeof input === 'string'
       ? input
@@ -151,6 +189,7 @@ const mockFetch = async (input: RequestInfo | URL): Promise<Response> => {
         ? input.toString()
         : input.url
   const url = new URL(target)
+  requestedUrls.add(url.toString())
   const match = url.pathname.match(
     /\/([^/]+)\/work\/=\/product_id\/([A-Za-z]{2}\d+)/
   )
@@ -176,11 +215,19 @@ const mockFetch = async (input: RequestInfo | URL): Promise<Response> => {
     finalUrl = redirected.toString()
   }
 
+  if (route.dropLocaleAlways) {
+    const stripped = new URL(finalUrl)
+    stripped.searchParams.delete('locale')
+    finalUrl = stripped.toString()
+  }
+
   return new MockResponse(route.html, finalUrl)
 }
 
 const runWithMockedFetch = async (fn: () => Promise<void>) => {
   const original = globalThis.fetch
+  fetchCount = 0
+  requestedUrls.clear()
   globalThis.fetch = mockFetch as typeof globalThis.fetch
   try {
     await fn()
@@ -240,6 +287,34 @@ test('follows redirects to the girls section (locale dropped on redirect)', asyn
     expect(data.circle_name).toBe('测试社团')
     expect(data.circle_link).toContain('/girls/circle/profile')
     expect(data.tags).toBe('乙女向,治愈')
+  })
+})
+
+test('follows redirects to sections outside the candidate list (bl)', async () => {
+  await runWithMockedFetch(async () => {
+    const data = await fetchDlsiteData('RJ01124081')
+    expect(data.rj_code).toBe('RJ01124081')
+    expect(data.title_default).toBe('新騎生誕記念作品 弟のケツマンコ開発日記')
+    expect(data.release_date).toBe('2023-11-27')
+    expect(data.circle_name).toBe('新騎の4回戦目')
+    expect(data.circle_link).toContain('/bl/circle/profile')
+    expect(data.tags).toBe('ASMR,BL')
+  })
+})
+
+test('never issues the same request twice while following redirects', async () => {
+  await runWithMockedFetch(async () => {
+    await fetchDlsiteData('RJ01124081')
+    // A no-op hop would refetch an identical URL until the hop cap is hit
+    expect(requestedUrls.size).toBe(fetchCount)
+  })
+})
+
+test('returns data when a section never echoes the requested locale', async () => {
+  await runWithMockedFetch(async () => {
+    const data = await fetchDlsiteData('RJ00000001')
+    expect(data.title_default).toBe('新騎生誕記念作品 弟のケツマンコ開発日記')
+    expect(data.release_date).toBe('2023-11-27')
   })
 })
 
