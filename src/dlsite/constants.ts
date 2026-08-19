@@ -32,12 +32,13 @@ export const DLSITE_API_BASE: Record<DlsiteSite, string> = {
   girls: 'https://www.dlsite.com/girls/api/=/product.json'
 }
 
-// 单跳上游请求上限。没有 signal 时唯一的兜底是 undici 默认的 300s headersTimeout。
-// DLsite 正常页面 <2s，10s 已有 5 倍余量。
+// Per-hop ceiling on an upstream request. Without a signal the only backstop is
+// undici's 300s default headersTimeout; a normal DLsite page loads in under 2s.
 export const FETCH_TIMEOUT_MS = 10_000
 
-// 单次 fetchDlsiteData 的墙钟预算。候选站探测是串行的（RJ 最多 5 站 × 3 跳，
-// 再叠加 product.json 回退），只靠单跳超时最坏仍会累积到 200s。
+// Wall-clock budget for one fetchDlsiteData call. Candidate probing is serial
+// (up to 5 sections x 3 hops for RJ, plus the product.json fallback), so a
+// per-hop cap alone still accumulates to ~200s.
 export const TOTAL_TIMEOUT_MS = 30_000
 
 export const DL_SUPPORTED_LOCALES = {

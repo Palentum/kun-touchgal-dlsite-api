@@ -30,8 +30,9 @@ interface DocumentResult {
   url: string
 }
 
-// 每跳上限与整次调用的预算取「先到者」。少了 signal，挂起的上游会一路占住入站
-// socket 和已解析的 DOM 直到 undici 的 300s 兜底 —— 串行探测会把它乘到小时级。
+// Per-hop ceiling and the call-wide budget, whichever fires first. With no
+// signal at all a hung upstream holds the inbound socket and every parsed DOM
+// until undici's 300s default — and serial probing multiplies that.
 const createRequestInit = (deadline: AbortSignal): RequestInit => ({
   headers: {
     ...REQUEST_HEADERS,
@@ -42,18 +43,15 @@ const createRequestInit = (deadline: AbortSignal): RequestInit => ({
   signal: AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), deadline])
 })
 
-const isAbortError = (err: unknown): boolean =>
+// A timeout is not "this section doesn't carry the work". A raw DOMException
+// falls through server.ts's message match to 500, and folding it into
+// DLSITE_PRODUCT_NOT_FOUND would be worse still — 404 is cacheable, so one
+// upstream stall would record a real work as permanently missing.
+const toUpstreamError = (err: unknown): unknown =>
   err instanceof DOMException &&
   (err.name === 'TimeoutError' || err.name === 'AbortError')
-
-// 超时不是「这个 section 不带这个作品」。中止异常原样抛出会落到 server.ts 的 500
-// 分支，而这里必须复用 `DLsite request failed` 前缀走 502：调用方会缓存 404。
-const toUpstreamError = (err: unknown): Error =>
-  isAbortError(err)
     ? new Error('DLsite request failed: upstream timeout')
-    : err instanceof Error
-      ? err
-      : new Error(String(err))
+    : err
 
 const parseHtmlDocument = (html: string): Document => parseHTML(html).document
 
@@ -82,7 +80,7 @@ const requestDocument = async (
       )
     }
 
-    // body 读取同样受 signal 约束，所以一并留在 try 里
+    // The signal aborts the body stream too, so this stays inside the try
     const html = await response.text()
     const finalUrl = response.url || url
     const site = detectSiteFromUrl(finalUrl) ?? fallbackSite
@@ -258,7 +256,8 @@ export const fetchDlsiteData = async (
   const normalizedCode = normalizeDlsiteCode(code)
   const candidateSites = getCandidateSites(normalizedCode)
 
-  // 一次调用一个预算，覆盖串行候选探测的累加；external 让调用方在客户端断连时收摊
+  // One budget per call, so serial candidate probing can't accumulate past it;
+  // `external` lets the caller cut it short when the client hangs up
   const budget = AbortSignal.timeout(TOTAL_TIMEOUT_MS)
   const deadline = external ? AbortSignal.any([budget, external]) : budget
 
@@ -306,8 +305,9 @@ export const fetchDlsiteData = async (
     primaryDoc.site
   )
 
-  // allSettled，不用 all：jp/en 只贡献本地化标题。一个慢到超时或 5xx 的版本页
-  // 不该把已经抓好的 cn 数据整个丢掉 —— 与 product.json 路径同一处理
+  // allSettled, not all — same reason as the product.json path: these two only
+  // supply localized titles, so a slow or 5xx edition page must not discard an
+  // already-scraped cn page
   const [docJp, docEn] = (
     await Promise.allSettled([
       fetchSecondaryDocument(jpUrl, primaryDoc, deadline),

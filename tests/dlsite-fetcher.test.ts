@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { expect, test } from 'vitest'
+import { afterEach, expect, test } from 'vitest'
 import { fetchDlsiteData } from '../src/dlsite'
 
 class MockResponse implements Response {
@@ -219,17 +219,18 @@ const API_FOUND: ApiMock = {
 
 let fetchCount = 0
 const requestedUrls = new Set<string>()
-// 让指定 locale 的版本页返回 5xx，验证它不会拖垮主结果
+// Serves 5xx for the given locale, to check one bad edition page can't sink the
+// primary result
 let failingLocales = new Set<string>()
+// Recorded rather than asserted inline: an expect() thrown from inside the mock
+// is swallowed by the allSettled around the jp/en edition fetches
+const unsignedRequests: string[] = []
 
 const mockFetch = async (
   input: RequestInfo | URL,
   init?: RequestInit
 ): Promise<Response> => {
   fetchCount += 1
-  // 每个出站请求都必须带中止信号，否则唯一兜底是 undici 的 300s headersTimeout
-  expect(init?.signal).toBeInstanceOf(AbortSignal)
-  expect(init?.signal?.aborted).toBe(false)
   const target =
     typeof input === 'string'
       ? input
@@ -238,6 +239,11 @@ const mockFetch = async (
         : input.url
   const url = new URL(target)
   requestedUrls.add(url.toString())
+
+  // Without a signal the only backstop is undici's 300s default headersTimeout
+  if (!(init?.signal instanceof AbortSignal) || init.signal.aborted) {
+    unsignedRequests.push(url.toString())
+  }
 
   if (url.pathname.endsWith('/api/=/product.json')) {
     const workno = url.searchParams.get('workno') ?? ''
@@ -305,6 +311,12 @@ const runWithMockedFetch = async (fn: () => Promise<void>) => {
     globalThis.fetch = original
   }
 }
+
+afterEach(() => {
+  const seen = [...unsignedRequests]
+  unsignedRequests.length = 0
+  expect(seen).toEqual([])
+})
 
 test('parses RJ maniax pages correctly', async () => {
   await runWithMockedFetch(async () => {
@@ -440,7 +452,7 @@ test('keeps the scraped page when only a secondary edition page fails', async ()
   await runWithMockedFetch(async () => {
     failingLocales = new Set(['en_US'])
     // Promise.all here discarded a fully scraped zh_CN page over a 503 on the
-    // en_US edition — the timeout work makes that failure mode reachable in 10s
+    // en_US edition — the per-hop timeout makes that failure mode reachable in 10s
     const data = await fetchDlsiteData('RJ01527759')
     expect(data.title_default).toBe(
       'JKフェラチオ！だぶるアニメ！ 教育係の雛子ちゃんとクーデレ匂いフェチの新人ルリちゃん♪'
