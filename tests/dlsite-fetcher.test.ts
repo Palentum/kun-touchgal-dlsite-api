@@ -135,6 +135,15 @@ const BL_HTML = `
 </html>
 `
 
+// Real aix pages are SPA shells with no server-rendered #work_outline — the only
+// way into the product.json fallback
+const SPA_SHELL_HTML = `
+<!doctype html>
+<html lang="zh-CN">
+  <body><div id="app"></div></body>
+</html>
+`
+
 const htmlCache = {
   RJ01527759: readMeta('RJ01527759_RJ.html'),
   RJ01341035: readMeta('RJ01341035_ai.html'),
@@ -173,7 +182,39 @@ const routeMap: Record<RouteKey, RouteMock> = {
   },
   'bl/RJ01124081': { html: BL_HTML },
   'maniax/RJ00000001': { html: BL_HTML, dropLocaleAlways: true },
+  'maniax/RJ01999001': { html: SPA_SHELL_HTML },
   'pro/VJ01002419': { html: htmlCache.VJ01002419 }
+}
+
+interface ApiMock {
+  status: number
+  statusText: string
+  body: string
+}
+
+// Keyed workno/locale, section-agnostic: the candidate loop stops at the first
+// non-404, so these cases exercise the status dimension
+let apiRoutes: Record<string, ApiMock> = {}
+
+const API_THROTTLED: ApiMock = {
+  status: 429,
+  statusText: 'Too Many Requests',
+  body: ''
+}
+
+const API_FOUND: ApiMock = {
+  status: 200,
+  statusText: 'OK',
+  body: JSON.stringify([
+    {
+      work_name: '孤独少女との50日間',
+      maker_name: 'こんなに大きくなりました',
+      maker_id: 'RG12345',
+      regist_date: '2025-03-01 00:00:00',
+      genres: [{ name: '少女' }, { name: '治愈' }],
+      site_id: 'aix'
+    }
+  ])
 }
 
 let fetchCount = 0
@@ -189,6 +230,22 @@ const mockFetch = async (input: RequestInfo | URL): Promise<Response> => {
         : input.url
   const url = new URL(target)
   requestedUrls.add(url.toString())
+
+  if (url.pathname.endsWith('/api/=/product.json')) {
+    const workno = url.searchParams.get('workno') ?? ''
+    const locale = url.searchParams.get('locale') ?? ''
+    const mock = apiRoutes[`${workno}/${locale}`]
+    if (!mock) {
+      return new MockResponse('', url.toString(), 404, 'Not Found')
+    }
+    return new MockResponse(
+      mock.body,
+      url.toString(),
+      mock.status,
+      mock.statusText
+    )
+  }
+
   const match = url.pathname.match(
     /\/([^/]+)\/work\/=\/product_id\/([A-Za-z]{2}\d+)/
   )
@@ -227,6 +284,7 @@ const runWithMockedFetch = async (fn: () => Promise<void>) => {
   const original = globalThis.fetch
   fetchCount = 0
   requestedUrls.clear()
+  apiRoutes = {}
   globalThis.fetch = mockFetch as typeof globalThis.fetch
   try {
     await fn()
@@ -320,6 +378,48 @@ test('returns data when a section never echoes the requested locale', async () =
     const data = await fetchDlsiteData('RJ00000001')
     expect(data.title_default).toBe('新騎生誕記念作品 弟のケツマンコ開発日記')
     expect(data.release_date).toBe('2023-11-27')
+  })
+})
+
+test('reports throttled product.json as an upstream failure, not a missing work', async () => {
+  await runWithMockedFetch(async () => {
+    apiRoutes = {
+      'RJ01999001/zh_CN': API_THROTTLED,
+      'RJ01999001/ja_JP': API_THROTTLED,
+      'RJ01999001/en_US': API_THROTTLED
+    }
+    // Reporting DLSITE_PRODUCT_NOT_FOUND here makes callers that cache 404 record a
+    // real work as permanently nonexistent
+    await expect(fetchDlsiteData('RJ01999001')).rejects.toThrow(
+      /^DLsite request failed: 429/
+    )
+    // 1 shell page + 1 product.json per locale. Swallowing the 429 instead would
+    // walk all 5 candidate sites per locale (16) — throttling its own retry storm
+    expect(fetchCount).toBe(4)
+  })
+})
+
+test('still reports a genuinely missing product as not found', async () => {
+  await runWithMockedFetch(async () => {
+    apiRoutes = {}
+    await expect(fetchDlsiteData('RJ01999001')).rejects.toThrow(
+      'DLSITE_PRODUCT_NOT_FOUND'
+    )
+  })
+})
+
+test('keeps the response when only a secondary locale fails', async () => {
+  await runWithMockedFetch(async () => {
+    apiRoutes = {
+      'RJ01999001/zh_CN': API_FOUND,
+      'RJ01999001/ja_JP': API_FOUND,
+      'RJ01999001/en_US': API_THROTTLED
+    }
+    const data = await fetchDlsiteData('RJ01999001')
+    expect(data.title_default).toBe('孤独少女との50日間')
+    expect(data.title_en).toBeUndefined()
+    expect(data.release_date).toBe('2025-03-01')
+    expect(data.circle_link).toContain('/aix/circle/profile')
   })
 })
 

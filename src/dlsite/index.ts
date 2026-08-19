@@ -152,7 +152,14 @@ const fetchProductApi = async (
   for (const site of sites) {
     const url = `${DLSITE_API_BASE[site]}?workno=${code}&locale=${locale}`
     const response = await fetch(url, createRequestInit())
-    if (!response.ok) continue
+    // Only 404 means this section doesn't carry the work. Collapsing 403/429/5xx
+    // into a cacheable "not found" makes callers record a real work as missing.
+    if (response.status === 404) continue
+    if (!response.ok) {
+      throw new Error(
+        `DLsite request failed: ${response.status} ${response.statusText}`
+      )
+    }
 
     const data = (await response.json()) as ApiProductData[]
     if (data?.[0]) return data[0]
@@ -164,13 +171,22 @@ const fetchDlsiteDataFromApi = async (
   code: string,
   candidateSites: DlsiteSite[]
 ): Promise<DlsiteApiResponse> => {
-  const [dataCn, dataJp, dataEn] = await Promise.all([
+  // allSettled, not all: a lone en failure must not discard usable cn/jp data —
+  // the rejection only decides the outcome when both cn and jp came back empty
+  const results = await Promise.allSettled([
     fetchProductApi(code, DL_SUPPORTED_LOCALES.cn, candidateSites),
     fetchProductApi(code, DL_SUPPORTED_LOCALES.jp, candidateSites),
     fetchProductApi(code, DL_SUPPORTED_LOCALES.en, candidateSites)
   ])
+  const [dataCn, dataJp, dataEn] = results.map((result) =>
+    result.status === 'fulfilled' ? result.value : null
+  )
 
   if (!dataCn && !dataJp) {
+    const failed = results.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected'
+    )
+    if (failed) throw failed.reason
     throw new Error('DLSITE_PRODUCT_NOT_FOUND')
   }
 
