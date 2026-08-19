@@ -2,7 +2,9 @@ import { parseHTML } from 'linkedom'
 import {
   DL_SUPPORTED_LOCALES,
   DLSITE_API_BASE,
+  FETCH_TIMEOUT_MS,
   REQUEST_HEADERS,
+  TOTAL_TIMEOUT_MS,
   ADULT_COOKIE
 } from './constants'
 import {
@@ -28,14 +30,30 @@ interface DocumentResult {
   url: string
 }
 
-const createRequestInit = (): RequestInit => ({
+// 每跳上限与整次调用的预算取「先到者」。少了 signal，挂起的上游会一路占住入站
+// socket 和已解析的 DOM 直到 undici 的 300s 兜底 —— 串行探测会把它乘到小时级。
+const createRequestInit = (deadline: AbortSignal): RequestInit => ({
   headers: {
     ...REQUEST_HEADERS,
     Cookie: ADULT_COOKIE
   },
   redirect: 'follow' as RequestRedirect,
-  cache: 'no-store'
+  cache: 'no-store',
+  signal: AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), deadline])
 })
+
+const isAbortError = (err: unknown): boolean =>
+  err instanceof DOMException &&
+  (err.name === 'TimeoutError' || err.name === 'AbortError')
+
+// 超时不是「这个 section 不带这个作品」。中止异常原样抛出会落到 server.ts 的 500
+// 分支，而这里必须复用 `DLsite request failed` 前缀走 502：调用方会缓存 404。
+const toUpstreamError = (err: unknown): Error =>
+  isAbortError(err)
+    ? new Error('DLsite request failed: upstream timeout')
+    : err instanceof Error
+      ? err
+      : new Error(String(err))
 
 const parseHtmlDocument = (html: string): Document => parseHTML(html).document
 
@@ -49,38 +67,45 @@ const getLocaleFromUrl = (url: string): string | null => {
 
 const requestDocument = async (
   url: string,
-  fallbackSite: DlsiteSite
+  fallbackSite: DlsiteSite,
+  deadline: AbortSignal
 ): Promise<DocumentResult | null> => {
-  const response = await fetch(url, createRequestInit())
-  if (response.status === 404) {
-    return null
-  }
+  try {
+    const response = await fetch(url, createRequestInit(deadline))
+    if (response.status === 404) {
+      return null
+    }
 
-  if (!response.ok) {
-    throw new Error(
-      `DLsite request failed: ${response.status} ${response.statusText}`
-    )
-  }
+    if (!response.ok) {
+      throw new Error(
+        `DLsite request failed: ${response.status} ${response.statusText}`
+      )
+    }
 
-  const html = await response.text()
-  const finalUrl = response.url || url
-  const site = detectSiteFromUrl(finalUrl) ?? fallbackSite
+    // body 读取同样受 signal 约束，所以一并留在 try 里
+    const html = await response.text()
+    const finalUrl = response.url || url
+    const site = detectSiteFromUrl(finalUrl) ?? fallbackSite
 
-  return {
-    document: parseHtmlDocument(html),
-    site,
-    url: finalUrl
+    return {
+      document: parseHtmlDocument(html),
+      site,
+      url: finalUrl
+    }
+  } catch (err) {
+    throw toUpstreamError(err)
   }
 }
 
 const fetchSecondaryDocument = async (
   url: string,
-  primary: DocumentResult
+  primary: DocumentResult,
+  deadline: AbortSignal
 ): Promise<Document | null> => {
   if (url === primary.url) {
     return primary.document
   }
-  const doc = await requestDocument(url, primary.site)
+  const doc = await requestDocument(url, primary.site, deadline)
   return doc?.document ?? null
 }
 
@@ -104,7 +129,8 @@ const withLocale = (url: string, locale: DlsiteLocale): string | null => {
 const fetchDocumentForSite = async (
   code: string,
   locale: DlsiteLocale,
-  site: DlsiteSite
+  site: DlsiteSite,
+  deadline: AbortSignal
 ): Promise<DocumentResult | null> => {
   let requestUrl = buildProductUrl(code, locale, site)
   let currentSite = site
@@ -113,7 +139,7 @@ const fetchDocumentForSite = async (
 
   for (let hop = 0; hop < 3; hop += 1) {
     attempted.add(requestUrl)
-    result = await requestDocument(requestUrl, currentSite)
+    result = await requestDocument(requestUrl, currentSite, deadline)
     if (!result) {
       return null
     }
@@ -147,36 +173,42 @@ interface ApiProductData {
 const fetchProductApi = async (
   code: string,
   locale: DlsiteLocale,
-  sites: DlsiteSite[]
+  sites: DlsiteSite[],
+  deadline: AbortSignal
 ): Promise<ApiProductData | null> => {
   for (const site of sites) {
     const url = `${DLSITE_API_BASE[site]}?workno=${code}&locale=${locale}`
-    const response = await fetch(url, createRequestInit())
-    // Only 404 means this section doesn't carry the work. Collapsing 403/429/5xx
-    // into a cacheable "not found" makes callers record a real work as missing.
-    if (response.status === 404) continue
-    if (!response.ok) {
-      throw new Error(
-        `DLsite request failed: ${response.status} ${response.statusText}`
-      )
-    }
+    try {
+      const response = await fetch(url, createRequestInit(deadline))
+      // Only 404 means this section doesn't carry the work. Collapsing 403/429/5xx
+      // into a cacheable "not found" makes callers record a real work as missing.
+      if (response.status === 404) continue
+      if (!response.ok) {
+        throw new Error(
+          `DLsite request failed: ${response.status} ${response.statusText}`
+        )
+      }
 
-    const data = (await response.json()) as ApiProductData[]
-    if (data?.[0]) return data[0]
+      const data = (await response.json()) as ApiProductData[]
+      if (data?.[0]) return data[0]
+    } catch (err) {
+      throw toUpstreamError(err)
+    }
   }
   return null
 }
 
 const fetchDlsiteDataFromApi = async (
   code: string,
-  candidateSites: DlsiteSite[]
+  candidateSites: DlsiteSite[],
+  deadline: AbortSignal
 ): Promise<DlsiteApiResponse> => {
   // allSettled, not all: a lone en failure must not discard usable cn/jp data —
   // the rejection only decides the outcome when both cn and jp came back empty
   const results = await Promise.allSettled([
-    fetchProductApi(code, DL_SUPPORTED_LOCALES.cn, candidateSites),
-    fetchProductApi(code, DL_SUPPORTED_LOCALES.jp, candidateSites),
-    fetchProductApi(code, DL_SUPPORTED_LOCALES.en, candidateSites)
+    fetchProductApi(code, DL_SUPPORTED_LOCALES.cn, candidateSites, deadline),
+    fetchProductApi(code, DL_SUPPORTED_LOCALES.jp, candidateSites, deadline),
+    fetchProductApi(code, DL_SUPPORTED_LOCALES.en, candidateSites, deadline)
   ])
   const [dataCn, dataJp, dataEn] = results.map((result) =>
     result.status === 'fulfilled' ? result.value : null
@@ -220,17 +252,23 @@ const fetchDlsiteDataFromApi = async (
 }
 
 export const fetchDlsiteData = async (
-  code: string
+  code: string,
+  external?: AbortSignal
 ): Promise<DlsiteApiResponse> => {
   const normalizedCode = normalizeDlsiteCode(code)
   const candidateSites = getCandidateSites(normalizedCode)
+
+  // 一次调用一个预算，覆盖串行候选探测的累加；external 让调用方在客户端断连时收摊
+  const budget = AbortSignal.timeout(TOTAL_TIMEOUT_MS)
+  const deadline = external ? AbortSignal.any([budget, external]) : budget
 
   let primaryDoc: DocumentResult | null = null
   for (const site of candidateSites) {
     primaryDoc = await fetchDocumentForSite(
       normalizedCode,
       DL_SUPPORTED_LOCALES.cn,
-      site
+      site,
+      deadline
     )
     if (primaryDoc) {
       break
@@ -245,7 +283,7 @@ export const fetchDlsiteData = async (
 
   // SPA pages (e.g. aix) lack server-rendered metadata — fall back to JSON API
   if (!docCn.querySelector('#work_outline')) {
-    return fetchDlsiteDataFromApi(normalizedCode, candidateSites)
+    return fetchDlsiteDataFromApi(normalizedCode, candidateSites, deadline)
   }
 
   const releaseDate = extractReleaseDate(docCn)
@@ -268,10 +306,14 @@ export const fetchDlsiteData = async (
     primaryDoc.site
   )
 
-  const [docJp, docEn] = await Promise.all([
-    fetchSecondaryDocument(jpUrl, primaryDoc),
-    fetchSecondaryDocument(enUrl, primaryDoc)
-  ])
+  // allSettled，不用 all：jp/en 只贡献本地化标题。一个慢到超时或 5xx 的版本页
+  // 不该把已经抓好的 cn 数据整个丢掉 —— 与 product.json 路径同一处理
+  const [docJp, docEn] = (
+    await Promise.allSettled([
+      fetchSecondaryDocument(jpUrl, primaryDoc, deadline),
+      fetchSecondaryDocument(enUrl, primaryDoc, deadline)
+    ])
+  ).map((result) => (result.status === 'fulfilled' ? result.value : null))
 
   const cleanTitle = (document: Document | null): string | undefined => {
     const raw = extractTitle(document)

@@ -219,9 +219,17 @@ const API_FOUND: ApiMock = {
 
 let fetchCount = 0
 const requestedUrls = new Set<string>()
+// 让指定 locale 的版本页返回 5xx，验证它不会拖垮主结果
+let failingLocales = new Set<string>()
 
-const mockFetch = async (input: RequestInfo | URL): Promise<Response> => {
+const mockFetch = async (
+  input: RequestInfo | URL,
+  init?: RequestInit
+): Promise<Response> => {
   fetchCount += 1
+  // 每个出站请求都必须带中止信号，否则唯一兜底是 undici 的 300s headersTimeout
+  expect(init?.signal).toBeInstanceOf(AbortSignal)
+  expect(init?.signal?.aborted).toBe(false)
   const target =
     typeof input === 'string'
       ? input
@@ -260,6 +268,10 @@ const mockFetch = async (input: RequestInfo | URL): Promise<Response> => {
     return new MockResponse('', url.toString(), 404, 'Not Found')
   }
 
+  if (failingLocales.has(url.searchParams.get('locale') ?? '')) {
+    return new MockResponse('', url.toString(), 503, 'Service Unavailable')
+  }
+
   let finalUrl = url.toString()
   if (route.redirectSite && route.redirectSite !== site) {
     const redirected = new URL(
@@ -285,6 +297,7 @@ const runWithMockedFetch = async (fn: () => Promise<void>) => {
   fetchCount = 0
   requestedUrls.clear()
   apiRoutes = {}
+  failingLocales = new Set()
   globalThis.fetch = mockFetch as typeof globalThis.fetch
   try {
     await fn()
@@ -420,6 +433,21 @@ test('keeps the response when only a secondary locale fails', async () => {
     expect(data.title_en).toBeUndefined()
     expect(data.release_date).toBe('2025-03-01')
     expect(data.circle_link).toContain('/aix/circle/profile')
+  })
+})
+
+test('keeps the scraped page when only a secondary edition page fails', async () => {
+  await runWithMockedFetch(async () => {
+    failingLocales = new Set(['en_US'])
+    // Promise.all here discarded a fully scraped zh_CN page over a 503 on the
+    // en_US edition — the timeout work makes that failure mode reachable in 10s
+    const data = await fetchDlsiteData('RJ01527759')
+    expect(data.title_default).toBe(
+      'JKフェラチオ！だぶるアニメ！ 教育係の雛子ちゃんとクーデレ匂いフェチの新人ルリちゃん♪'
+    )
+    expect(data.release_date).toBe('2026-01-02')
+    expect(data.title_jp).toBe(data.title_default)
+    expect(data.title_en).toBeUndefined()
   })
 })
 
