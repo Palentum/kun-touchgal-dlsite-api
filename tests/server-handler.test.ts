@@ -12,9 +12,12 @@ const createRes = () => {
   const state = {
     statusCode: 0,
     body: '',
+    writableFinished: false,
     setHeader: () => {},
+    on: () => {},
     end(chunk?: string) {
       this.body = chunk ?? ''
+      this.writableFinished = true
     }
   }
   return { res: state as unknown as ServerResponse, state }

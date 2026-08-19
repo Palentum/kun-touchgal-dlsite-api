@@ -87,10 +87,19 @@ export const handleRequest = async (
       return
     }
 
+    // 客户端挂断后继续抓取只是白占内存：把在途的上游请求和已解析的 DOM 一起放掉。
+    // 'close' 在正常结束时也会触发，所以必须用 writableFinished 区分。
+    const controller = new AbortController()
+    res.on('close', () => {
+      if (!res.writableFinished) controller.abort()
+    })
+
     try {
-      const data = await fetchDlsiteData(code)
+      const data = await fetchDlsiteData(code, controller.signal)
       sendJson(res, 200, { data }, corsOrigin)
     } catch (err) {
+      // 已经断开的连接无处可写，也不该记成一次上游失败
+      if (controller.signal.aborted) return
       const message =
         err instanceof Error ? err.message : 'DLSITE_API_ERROR_UNKNOWN'
       const status =

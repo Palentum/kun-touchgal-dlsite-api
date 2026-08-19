@@ -89,29 +89,57 @@ test('the total budget caps serial candidate probing', async () => {
   })
 })
 
+const createRes = () => {
+  const listeners: Record<string, Array<() => void>> = {}
+  return {
+    statusCode: 0,
+    body: '',
+    writableFinished: false,
+    setHeader: () => {},
+    on(event: string, cb: () => void) {
+      ;(listeners[event] ??= []).push(cb)
+      return this
+    },
+    emit(event: string) {
+      listeners[event]?.forEach((cb) => cb())
+    },
+    end(chunk?: string) {
+      this.body = chunk ?? ''
+      this.writableFinished = true
+    }
+  }
+}
+
+const REQ = {
+  url: '/api/dlsite?code=RJ01527759',
+  method: 'GET',
+  headers: {}
+} as unknown as IncomingMessage
+
 test('an upstream timeout surfaces as 502, never 404', async () => {
   await runWith(hangingFetch, { fetch: 20, total: 10_000 }, async () => {
-    const state = {
-      statusCode: 0,
-      body: '',
-      setHeader: () => {},
-      on: () => {},
-      end(chunk?: string) {
-        this.body = chunk ?? ''
-      }
-    }
-    const req = {
-      url: '/api/dlsite?code=RJ01527759',
-      method: 'GET',
-      headers: {}
-    } as unknown as IncomingMessage
-
-    await handleRequest(req, state as unknown as ServerResponse)
+    const res = createRes()
+    await handleRequest(REQ, res as unknown as ServerResponse)
 
     // 404 会被 TouchGal 持久化，一次上游抖动就把真实作品永久标记成不存在
-    expect(state.statusCode).toBe(502)
-    expect(JSON.parse(state.body)).toEqual({
+    expect(res.statusCode).toBe(502)
+    expect(JSON.parse(res.body)).toEqual({
       error: 'DLsite request failed: upstream timeout'
     })
+  })
+})
+
+test('a client disconnect aborts the in-flight scrape', async () => {
+  await runWith(hangingFetch, { fetch: 10_000, total: 30_000 }, async () => {
+    const res = createRes()
+    const pending = handleRequest(REQ, res as unknown as ServerResponse)
+    await Promise.resolve()
+    expect(fetchCount).toBe(1)
+
+    res.emit('close')
+    // 没有中止的话这里要挂到 10s 的单跳预算，且还会往死连接上写一次
+    await expect(pending).resolves.toBeUndefined()
+    expect(res.statusCode).toBe(0)
+    expect(res.body).toBe('')
   })
 })
