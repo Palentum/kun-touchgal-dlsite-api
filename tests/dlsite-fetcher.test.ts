@@ -155,7 +155,6 @@ interface RouteMock {
 
 const routeMap: Record<RouteKey, RouteMock> = {
   'maniax/RJ01527759': { html: htmlCache.RJ01527759 },
-  'maniax/RJ01527748': { html: htmlCache.RJ01527759 },
   'maniax/RJ01341035': { html: htmlCache.RJ01341035, redirectSite: 'ai' },
   'ai/RJ01341035': { html: htmlCache.RJ01341035 },
   'maniax/RJ01466244': { html: htmlCache.RJ01466244, redirectSite: 'aix' },
@@ -245,6 +244,12 @@ test('parses RJ maniax pages correctly', async () => {
     expect(data.release_date).toBe('2026-01-02')
     expect(data.circle_name).toBe('Whisp')
     expect(data.circle_link).toContain('/maker_id/RG41088')
+    // The page's work_edition_linklist type_body lists RJ01527748 — a different
+    // work — and its "1,485 JPY" price text used to be read as a Japanese edition
+    expect(
+      [...requestedUrls].filter((url) => url.includes('RJ01527748'))
+    ).toEqual([])
+    expect(data.title_jp).toBe(data.title_default)
   })
 })
 

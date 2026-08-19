@@ -14,6 +14,6 @@ export default defineConfig({
     NODE_ENV: process.env.NODE_ENV ?? 'production'
   },
   banner: {
-    js: "// Built with tsup"
+    js: '// Built with tsup'
   }
 })

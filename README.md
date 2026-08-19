@@ -11,10 +11,10 @@ pnpm dev
 
 The dev server listens on `http://127.0.0.1:8787`. Available routes:
 
-| Method | Path            | Description                               |
-| ------ | --------------- | ----------------------------------------- |
-| GET    | `/health`       | Returns `{ status: "ok" }`.               |
-| GET    | `/api/dlsite`   | Requires `code` query (RJ/VJ). Returns a `DlsiteApiResponse` on success. |
+| Method | Path          | Description                                                              |
+| ------ | ------------- | ------------------------------------------------------------------------ |
+| GET    | `/health`     | Returns `{ status: "ok" }`.                                              |
+| GET    | `/api/dlsite` | Requires `code` query (RJ/VJ). Returns a `DlsiteApiResponse` on success. |
 
 ## Production build
 

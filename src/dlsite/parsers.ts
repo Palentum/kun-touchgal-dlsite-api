@@ -12,9 +12,7 @@ const MAKER_LABEL_PATTERN = /Circle|サークル|社团|社團|メーカー|社�
 const DATE_PATTERN = /(\d{4})[^\d]?(\d{1,2})[^\d]?(\d{1,2})/
 
 const matchDate = (text: string): string | undefined => {
-  const clean = text
-    .replace(/[年月日]/g, ' ')
-    .replace(/[./]/g, '-')
+  const clean = text.replace(/[年月日]/g, ' ').replace(/[./]/g, '-')
   const match = clean.match(DATE_PATTERN)
   if (!match) return undefined
 
@@ -102,26 +100,15 @@ export const extractCircle = (doc: Document | null): CircleInfo => {
   return { name, link }
 }
 
-const isJapaneseLink = (text: string, url: string) => {
-  const lower = text.toLowerCase()
-  return (
-    lower.includes('jp') ||
-    lower.includes('日本') ||
-    lower.includes('日本語') ||
-    url.includes('locale=ja')
-  )
-}
+const JAPANESE_EDITION_PATTERN = /日本|日文|日語|日语|japanese/i
 
-const isEnglishLink = (text: string, url: string) => {
-  const lower = text.toLowerCase()
-  return (
-    lower.includes('english') ||
-    lower.includes('en') ||
-    lower.includes('英语') ||
-    lower.includes('英語') ||
-    url.includes('locale=en')
-  )
-}
+const ENGLISH_EDITION_PATTERN = /英語|英语|英文|english/i
+
+const isJapaneseLink = (text: string, url: string) =>
+  JAPANESE_EDITION_PATTERN.test(text) || url.includes('locale=ja')
+
+const isEnglishLink = (text: string, url: string) =>
+  ENGLISH_EDITION_PATTERN.test(text) || url.includes('locale=en')
 
 export const extractEditionLinks = (
   doc: Document | null
@@ -129,23 +116,26 @@ export const extractEditionLinks = (
   const editions: DlsiteEditionLinks = {}
   if (!doc) return editions
 
-  const container =
-    doc.querySelector('div.work_edition_linklist') ??
-    doc.querySelector('div[class*="work_edition_linklist"]')
+  // type_trans is the language-version list; the same class also carries
+  // type_body, which lists *other products* in the same series with prices
+  // inlined into the anchor text ("ASMR版 1,485 JPY" used to read as Japanese).
+  // Returning {} is safe — the caller falls back to the primary URL's locale
+  // variant, which is always the same product.
+  const containers = Array.from(
+    doc.querySelectorAll('div.work_edition_linklist.type_trans')
+  )
 
-  if (!container) {
-    return editions
-  }
+  for (const container of containers) {
+    for (const anchor of Array.from(container.querySelectorAll('a'))) {
+      const text = getText(anchor)
+      const link = resolveDlsiteLink(anchor.getAttribute('href'))
+      if (!link || !text) continue
 
-  for (const anchor of Array.from(container.querySelectorAll('a'))) {
-    const text = getText(anchor)
-    const link = resolveDlsiteLink(anchor.getAttribute('href'))
-    if (!link || !text) continue
-
-    if (!editions.jp && isJapaneseLink(text, link)) {
-      editions.jp = link
-    } else if (!editions.en && isEnglishLink(text, link)) {
-      editions.en = link
+      if (!editions.jp && isJapaneseLink(text, link)) {
+        editions.jp = link
+      } else if (!editions.en && isEnglishLink(text, link)) {
+        editions.en = link
+      }
     }
   }
 
