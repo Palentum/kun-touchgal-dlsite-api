@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { fetchDlsiteData } from './dlsite'
+import { tryAcquire } from './gate'
 
 const ALLOWED_CORS_HOSTS = new Set(['127.0.0.1', 'touchgal.top', 'touchgal.us'])
 const REQUEST_BASE_URL = 'http://dlsite-api.internal'
@@ -87,6 +88,15 @@ export const handleRequest = async (
       return
     }
 
+    // 只有真正要去抓取的请求才占槽位；/health 与上面的参数校验都不进闸门，
+    // 饱和时探针必须仍能应答，否则 LB / pm2 会误判进程已死。
+    const release = tryAcquire()
+    if (!release) {
+      res.setHeader('Retry-After', '1')
+      sendJson(res, 503, { error: 'SERVICE_BUSY' }, corsOrigin)
+      return
+    }
+
     // 客户端挂断后继续抓取只是白占内存：把在途的上游请求和已解析的 DOM 一起放掉。
     // 'close' 在正常结束时也会触发，所以必须用 writableFinished 区分。
     const controller = new AbortController()
@@ -109,6 +119,9 @@ export const handleRequest = async (
             ? 502
             : 500
       sendJson(res, status, { error: message }, corsOrigin)
+    } finally {
+      // 中止路径在 catch 里提前 return，槽位仍然要还回去
+      release()
     }
     return
   }

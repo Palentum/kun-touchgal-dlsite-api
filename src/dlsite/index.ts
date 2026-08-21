@@ -95,16 +95,24 @@ const requestDocument = async (
   }
 }
 
-const fetchSecondaryDocument = async (
+const cleanTitle = (document: Document | null): string | undefined => {
+  const raw = extractTitle(document)
+  const cleaned = cleanDlsiteTitle(raw)
+  return cleaned || undefined
+}
+
+// 取完标题就返回字符串，让整份次要 DOM 立刻变成垃圾。以前这里返回 Document，
+// jp/en 两份要一直活到函数末尾的 cleanTitle —— 每请求同时驻留 3 份 DOM。
+const fetchSecondaryTitle = async (
   url: string,
   primary: DocumentResult,
   deadline: AbortSignal
-): Promise<Document | null> => {
+): Promise<string | undefined> => {
   if (url === primary.url) {
-    return primary.document
+    return cleanTitle(primary.document)
   }
   const doc = await requestDocument(url, primary.site, deadline)
-  return doc?.document ?? null
+  return cleanTitle(doc?.document ?? null)
 }
 
 // DLsite redirects works to whichever section owns them — including sections
@@ -308,24 +316,18 @@ export const fetchDlsiteData = async (
   // allSettled, not all — same reason as the product.json path: these two only
   // supply localized titles, so a slow or 5xx edition page must not discard an
   // already-scraped cn page
-  const [docJp, docEn] = (
+  const [titleJp, titleEn] = (
     await Promise.allSettled([
-      fetchSecondaryDocument(jpUrl, primaryDoc, deadline),
-      fetchSecondaryDocument(enUrl, primaryDoc, deadline)
+      fetchSecondaryTitle(jpUrl, primaryDoc, deadline),
+      fetchSecondaryTitle(enUrl, primaryDoc, deadline)
     ])
-  ).map((result) => (result.status === 'fulfilled' ? result.value : null))
-
-  const cleanTitle = (document: Document | null): string | undefined => {
-    const raw = extractTitle(document)
-    const cleaned = cleanDlsiteTitle(raw)
-    return cleaned || undefined
-  }
+  ).map((result) => (result.status === 'fulfilled' ? result.value : undefined))
 
   const result: DlsiteApiResponse = {
     rj_code: normalizedCode,
     title_default: cleanTitle(docCn) || normalizedCode,
-    title_jp: cleanTitle(docJp),
-    title_en: cleanTitle(docEn),
+    title_jp: titleJp,
+    title_en: titleEn,
     release_date: releaseDate,
     tags,
     circle_name: circleInfo.name?.trim() || undefined,
