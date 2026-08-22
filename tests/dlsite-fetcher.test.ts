@@ -222,6 +222,13 @@ const requestedUrls = new Set<string>()
 // Serves 5xx for the given locale, to check one bad edition page can't sink the
 // primary result
 let failingLocales = new Set<string>()
+// section → status its product pages answer with, regardless of code. A bot
+// check on one section must not veto the remaining candidates, and the status
+// dimension is what distinguishes which failure gets surfaced
+let failingSites = new Map<string, number>()
+// Same idea for product.json, 403 only. Kept separate from failingSites because
+// reaching the JSON path at all requires the section's shell page to answer 200.
+let forbiddenApiSites = new Set<string>()
 // Recorded rather than asserted inline: an expect() thrown from inside the mock
 // is swallowed by the allSettled around the jp/en edition fetches
 const unsignedRequests: string[] = []
@@ -246,6 +253,9 @@ const mockFetch = async (
   }
 
   if (url.pathname.endsWith('/api/=/product.json')) {
+    if (forbiddenApiSites.has(url.pathname.split('/')[1])) {
+      return new MockResponse('', url.toString(), 403, 'Forbidden')
+    }
     const workno = url.searchParams.get('workno') ?? ''
     const locale = url.searchParams.get('locale') ?? ''
     const mock = apiRoutes[`${workno}/${locale}`]
@@ -268,6 +278,10 @@ const mockFetch = async (
   }
 
   const [, site, code] = match
+  const failingStatus = failingSites.get(site)
+  if (failingStatus) {
+    return new MockResponse('', url.toString(), failingStatus, 'Upstream')
+  }
   const key = `${site}/${code.toUpperCase()}` as RouteKey
   const route = routeMap[key]
   if (!route) {
@@ -304,6 +318,8 @@ const runWithMockedFetch = async (fn: () => Promise<void>) => {
   requestedUrls.clear()
   apiRoutes = {}
   failingLocales = new Set()
+  failingSites = new Map()
+  forbiddenApiSites = new Set()
   globalThis.fetch = mockFetch as typeof globalThis.fetch
   try {
     await fn()
@@ -390,6 +406,57 @@ test('follows redirects to sections outside the candidate list (bl)', async () =
   })
 })
 
+test('keeps probing candidates when the first section answers 403', async () => {
+  await runWithMockedFetch(async () => {
+    // maniax is the first candidate for every RJ code and the likeliest to trip
+    // a Cloudflare bot check; letting it veto the rest hid every girls/ai/aix/appx work
+    failingSites = new Map([['maniax', 403]])
+    const data = await fetchDlsiteData('RJ202395')
+    expect(data.title_default).toBe('王子様の耳元でおやすみ')
+    expect(data.circle_link).toContain('/girls/circle/profile')
+    expect([...requestedUrls].some((url) => url.includes('/girls/work/'))).toBe(
+      true
+    )
+  })
+})
+
+test('reports an upstream failure when every candidate section fails', async () => {
+  await runWithMockedFetch(async () => {
+    failingSites = new Map(
+      ['maniax', 'ai', 'aix', 'appx', 'girls'].map((site) => [site, 403])
+    )
+    // Degrading to DLSITE_PRODUCT_NOT_FOUND here would let one bad hour record a
+    // real work as permanently nonexistent — 404 is cacheable to callers
+    await expect(fetchDlsiteData('RJ202395')).rejects.toThrow(
+      /^DLsite request failed: 403/
+    )
+    expect(fetchCount).toBe(5)
+  })
+})
+
+test('surfaces the first failing candidate, not the last', async () => {
+  await runWithMockedFetch(async () => {
+    // maniax's 429 is the one worth reporting — it says "you are being
+    // throttled". girls comes last, and its transient 503 used to overwrite it
+    failingSites = new Map([
+      ['maniax', 429],
+      ['girls', 503]
+    ])
+    await expect(fetchDlsiteData('RJ202395')).rejects.toThrow(
+      /^DLsite request failed: 429/
+    )
+  })
+})
+
+test('still reports a missing HTML-path product as not found', async () => {
+  await runWithMockedFetch(async () => {
+    // The 403 fix must not turn a genuine miss into a 502
+    await expect(fetchDlsiteData('RJ00000404')).rejects.toThrow(
+      'DLSITE_PRODUCT_NOT_FOUND'
+    )
+  })
+})
+
 test('never issues the same request twice while following redirects', async () => {
   await runWithMockedFetch(async () => {
     await fetchDlsiteData('RJ01124081')
@@ -418,9 +485,26 @@ test('reports throttled product.json as an upstream failure, not a missing work'
     await expect(fetchDlsiteData('RJ01999001')).rejects.toThrow(
       /^DLsite request failed: 429/
     )
-    // 1 shell page + 1 product.json per locale. Swallowing the 429 instead would
-    // walk all 5 candidate sites per locale (16) — throttling its own retry storm
-    expect(fetchCount).toBe(4)
+    // 1 shell page + 5 candidate sections per locale. The amplification is the
+    // deliberate cost of not letting the first section veto the rest; it is
+    // bounded by the candidate list, and MAX_IN_FLIGHT / TOTAL_TIMEOUT_MS cap it
+    expect(fetchCount).toBe(16)
+  })
+})
+
+test('keeps probing product.json candidates when one section answers 403', async () => {
+  await runWithMockedFetch(async () => {
+    forbiddenApiSites = new Set(['maniax'])
+    apiRoutes = {
+      'RJ01999001/zh_CN': API_FOUND,
+      'RJ01999001/ja_JP': API_FOUND,
+      'RJ01999001/en_US': API_FOUND
+    }
+    // This path is the only one SPA/aix works ever take — a 403 on maniax's
+    // product.json used to make them permanently unreachable
+    const data = await fetchDlsiteData('RJ01999001')
+    expect(data.title_default).toBe('孤独少女との50日間')
+    expect(data.release_date).toBe('2025-03-01')
   })
 })
 

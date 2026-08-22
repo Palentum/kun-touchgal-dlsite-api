@@ -43,6 +43,8 @@ const createRequestInit = (deadline: AbortSignal): RequestInit => ({
   signal: AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), deadline])
 })
 
+const UPSTREAM_TIMEOUT_MESSAGE = 'DLsite request failed: upstream timeout'
+
 // A timeout is not "this section doesn't carry the work". A raw DOMException
 // falls through server.ts's message match to 500, and folding it into
 // DLSITE_PRODUCT_NOT_FOUND would be worse still — 404 is cacheable, so one
@@ -50,8 +52,16 @@ const createRequestInit = (deadline: AbortSignal): RequestInit => ({
 const toUpstreamError = (err: unknown): unknown =>
   err instanceof DOMException &&
   (err.name === 'TimeoutError' || err.name === 'AbortError')
-    ? new Error('DLsite request failed: upstream timeout')
+    ? new Error(UPSTREAM_TIMEOUT_MESSAGE)
     : err
+
+// 一个版块 403 只是它自己的边缘节点拒绝了这次请求，与其余版块无关，而且立刻
+// 返回 —— 继续探测几乎零成本。超时不同：它既是"上游整体不健康"的信号，又会
+// 在每个候选上再烧掉一个 FETCH_TIMEOUT_MS，把一次失败拖到 TOTAL_TIMEOUT_MS，
+// 同时把闸门槽位占满同样久。所以超时立刻终止，403/5xx 才继续。
+// 只认规范化之后的形态 —— 两个候选循环都先过 toUpstreamError 再判断。
+const isUpstreamTimeout = (err: unknown): boolean =>
+  err instanceof Error && err.message === UPSTREAM_TIMEOUT_MESSAGE
 
 const parseHtmlDocument = (html: string): Document => parseHTML(html).document
 
@@ -182,6 +192,8 @@ const fetchProductApi = async (
   sites: DlsiteSite[],
   deadline: AbortSignal
 ): Promise<ApiProductData | null> => {
+  let upstreamError: unknown = null
+
   for (const site of sites) {
     const url = `${DLSITE_API_BASE[site]}?workno=${code}&locale=${locale}`
     try {
@@ -198,9 +210,17 @@ const fetchProductApi = async (
       const data = (await response.json()) as ApiProductData[]
       if (data?.[0]) return data[0]
     } catch (err) {
-      throw toUpstreamError(err)
+      // 一个版块 403/429/5xx 不代表作品不在别处：裁决时机是候选用尽之后，
+      // 不是第一个候选。超时和中止除外，见 isUpstreamTimeout。
+      const upstream = toUpstreamError(err)
+      if (isUpstreamTimeout(upstream) || deadline.aborted) throw upstream
+      // 保留第一个：候选顺序就是"作品最可能在哪"的顺序，末尾版块的瞬时 5xx
+      // 不该盖掉 maniax 的 429 —— 后者才是运维需要看到的那条。
+      upstreamError ??= upstream
     }
   }
+
+  if (upstreamError) throw upstreamError
   return null
 }
 
@@ -270,19 +290,32 @@ export const fetchDlsiteData = async (
   const deadline = external ? AbortSignal.any([budget, external]) : budget
 
   let primaryDoc: DocumentResult | null = null
+  let upstreamError: unknown = null
   for (const site of candidateSites) {
-    primaryDoc = await fetchDocumentForSite(
-      normalizedCode,
-      DL_SUPPORTED_LOCALES.cn,
-      site,
-      deadline
-    )
-    if (primaryDoc) {
-      break
+    try {
+      const doc = await fetchDocumentForSite(
+        normalizedCode,
+        DL_SUPPORTED_LOCALES.cn,
+        site,
+        deadline
+      )
+      if (doc) {
+        primaryDoc = doc
+        break
+      }
+    } catch (err) {
+      // maniax 恒为第一个候选，也最容易吃到 Cloudflare 的 403 —— 让它一票否决
+      // 其余版块，等于 girls/ai/aix/appx 上的作品全部查不到。记下失败继续探测。
+      // err 已由 requestDocument 规范化过；超时和中止除外，见 isUpstreamTimeout。
+      if (isUpstreamTimeout(err) || deadline.aborted) throw err
+      upstreamError ??= err
     }
   }
 
   if (!primaryDoc) {
+    // 有过上游失败就报 502。只有全 404 才是可缓存的"不存在" —— 把上游故障
+    // 写成 404，调用方就会把一部真实作品永久记成不存在。
+    if (upstreamError) throw upstreamError
     throw new Error('DLSITE_PRODUCT_NOT_FOUND')
   }
 

@@ -103,6 +103,9 @@ test('a hung upstream request is aborted by the per-hop timeout', async () => {
     await expect(fetchDlsiteData('RJ01527759')).rejects.toThrow(
       'DLsite request failed: upstream timeout'
     )
+    // 1, not 5: a 403 lets the loop try the next candidate, a timeout must not.
+    // Probing on would burn another FETCH_TIMEOUT_MS per section and hold a gate
+    // slot for the whole TOTAL_TIMEOUT_MS instead of one hop
     expect(fetchCount).toBe(1)
   })
 })
