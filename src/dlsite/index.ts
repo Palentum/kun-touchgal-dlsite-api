@@ -30,6 +30,15 @@ interface DocumentResult {
   url: string
 }
 
+// 404 也要带回落点 URL：DLsite 会把一部分作品整个跳出 dlsite.com（BJ 码跳
+// comipo.app），此时 404 是第三方给的答案，不是 DLsite 说"没有这部作品"。
+interface MissingResult {
+  document: null
+  url: string
+}
+
+type RequestResult = DocumentResult | MissingResult
+
 // Per-hop ceiling and the call-wide budget, whichever fires first. With no
 // signal at all a hung upstream holds the inbound socket and every parsed DOM
 // until undici's 300s default — and serial probing multiplies that.
@@ -77,11 +86,11 @@ const requestDocument = async (
   url: string,
   fallbackSite: DlsiteSite,
   deadline: AbortSignal
-): Promise<DocumentResult | null> => {
+): Promise<RequestResult> => {
   try {
     const response = await fetch(url, createRequestInit(deadline))
     if (response.status === 404) {
-      return null
+      return { document: null, url: response.url || url }
     }
 
     if (!response.ok) {
@@ -122,24 +131,27 @@ const fetchSecondaryTitle = async (
     return cleanTitle(primary.document)
   }
   const doc = await requestDocument(url, primary.site, deadline)
-  return cleanTitle(doc?.document ?? null)
+  return cleanTitle(doc.document)
+}
+
+const isDlsiteUrl = (url: string): boolean => {
+  try {
+    const { hostname } = new URL(url)
+    return hostname === 'dlsite.com' || hostname.endsWith('.dlsite.com')
+  } catch {
+    return false
+  }
 }
 
 // DLsite redirects works to whichever section owns them — including sections
 // this service has no constant for (bl, books, …) — and drops ?locale= on the
 // way. Retry against the *resolved* URL so section names never have to be known.
 const withLocale = (url: string, locale: DlsiteLocale): string | null => {
-  try {
-    const parsed = new URL(url)
-    const isDlsite =
-      parsed.hostname === 'dlsite.com' ||
-      parsed.hostname.endsWith('.dlsite.com')
-    if (!isDlsite) return null
-    parsed.searchParams.set('locale', locale)
-    return parsed.toString()
-  } catch {
-    return null
-  }
+  // isDlsiteUrl 已经把这个字符串解析过一次且没抛，所以这里不需要再包 try
+  if (!isDlsiteUrl(url)) return null
+  const parsed = new URL(url)
+  parsed.searchParams.set('locale', locale)
+  return parsed.toString()
 }
 
 const fetchDocumentForSite = async (
@@ -147,17 +159,17 @@ const fetchDocumentForSite = async (
   locale: DlsiteLocale,
   site: DlsiteSite,
   deadline: AbortSignal
-): Promise<DocumentResult | null> => {
+): Promise<RequestResult> => {
   let requestUrl = buildProductUrl(code, locale, site)
   let currentSite = site
   const attempted = new Set<string>()
-  let result: DocumentResult | null = null
+  let result: RequestResult = { document: null, url: requestUrl }
 
   for (let hop = 0; hop < 3; hop += 1) {
     attempted.add(requestUrl)
     result = await requestDocument(requestUrl, currentSite, deadline)
-    if (!result) {
-      return null
+    if (!result.document) {
+      return result
     }
     if (getLocaleFromUrl(result.url) === locale) {
       break
@@ -291,6 +303,7 @@ export const fetchDlsiteData = async (
 
   let primaryDoc: DocumentResult | null = null
   let upstreamError: unknown = null
+  let redirectedOffDlsite = false
   for (const site of candidateSites) {
     try {
       const doc = await fetchDocumentForSite(
@@ -299,10 +312,13 @@ export const fetchDlsiteData = async (
         site,
         deadline
       )
-      if (doc) {
+      if (doc.document) {
         primaryDoc = doc
         break
       }
+      // DLsite 把这个码整个跳出了 dlsite.com（BJ 码跳 comipo.app）。落点的 404
+      // 是第三方的答案，不能拿来判定作品不存在。
+      if (!isDlsiteUrl(doc.url)) redirectedOffDlsite = true
     } catch (err) {
       // maniax 恒为第一个候选，也最容易吃到 Cloudflare 的 403 —— 让它一票否决
       // 其余版块，等于 girls/ai/aix/appx 上的作品全部查不到。记下失败继续探测。
@@ -316,6 +332,12 @@ export const fetchDlsiteData = async (
     // 有过上游失败就报 502。只有全 404 才是可缓存的"不存在" —— 把上游故障
     // 写成 404，调用方就会把一部真实作品永久记成不存在。
     if (upstreamError) throw upstreamError
+    // 跳出站后拿到的 404 同理不可缓存：DLsite 自己的 product.json 对这些作品
+    // 仍然有完整数据。限定"曾跳出站"是为了不放大扇出 —— 无条件回退会让每个
+    // 真不存在的 RJ 码额外发 3 locale x 5 版块次 product.json 请求。
+    if (redirectedOffDlsite) {
+      return fetchDlsiteDataFromApi(normalizedCode, candidateSites, deadline)
+    }
     throw new Error('DLSITE_PRODUCT_NOT_FOUND')
   }
 

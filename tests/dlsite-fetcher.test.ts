@@ -135,6 +135,33 @@ const BL_HTML = `
 </html>
 `
 
+// BJ codes have no section of their own in the candidate list: maniax redirects
+// them to /books/ and drops ?locale= on the way
+const BOOKS_HTML = `
+<!doctype html>
+<html lang="zh-CN">
+  <body>
+    <h1 id="work_name">少女地獄 II</h1>
+    <table id="work_outline">
+      <tr>
+        <th>发售日</th>
+        <td><a href="https://www.dlsite.com/books/new/=/year/2008/mon/11/day/15">2008年11月15日</a></td>
+      </tr>
+      <tr>
+        <th>社团名</th>
+        <td id="work_maker">
+          <a href="https://www.dlsite.com/books/author/=/author_id/AJ001591">オイスター</a>
+        </td>
+      </tr>
+    </table>
+    <div class="main_genre">
+      <a href="/books/fsr/=/genre/001">羞辱</a>
+      <a href="/books/fsr/=/genre/002">教育</a>
+    </div>
+  </body>
+</html>
+`
+
 // Real aix pages are SPA shells with no server-rendered #work_outline — the only
 // way into the product.json fallback
 const SPA_SHELL_HTML = `
@@ -183,7 +210,13 @@ const routeMap: Record<RouteKey, RouteMock> = {
   'bl/RJ01124081': { html: BL_HTML },
   'maniax/RJ00000001': { html: BL_HTML, dropLocaleAlways: true },
   'maniax/RJ01999001': { html: SPA_SHELL_HTML },
-  'pro/VJ01002419': { html: htmlCache.VJ01002419 }
+  'pro/VJ01002419': { html: htmlCache.VJ01002419 },
+  'maniax/BJ002248': {
+    html: BOOKS_HTML,
+    redirectSite: 'books',
+    dropLocaleOnRedirect: true
+  },
+  'books/BJ002248': { html: BOOKS_HTML }
 }
 
 interface ApiMock {
@@ -229,6 +262,10 @@ let failingSites = new Map<string, number>()
 // Same idea for product.json, 403 only. Kept separate from failingSites because
 // reaching the JSON path at all requires the section's shell page to answer 200.
 let forbiddenApiSites = new Set<string>()
+// code → status a non-dlsite.com landing answers with. DLsite redirects some BJ
+// works off-host entirely; fetch follows that internally, so a single request
+// comes back carrying the third party's status and URL.
+let offsiteRedirects = new Map<string, number>()
 // Recorded rather than asserted inline: an expect() thrown from inside the mock
 // is swallowed by the allSettled around the jp/en edition fetches
 const unsignedRequests: string[] = []
@@ -278,6 +315,15 @@ const mockFetch = async (
   }
 
   const [, site, code] = match
+  const offsiteStatus = offsiteRedirects.get(code.toUpperCase())
+  if (offsiteStatus) {
+    return new MockResponse(
+      '',
+      `https://www.comipo.app/product/${code.toUpperCase()}`,
+      offsiteStatus,
+      'Offsite'
+    )
+  }
   const failingStatus = failingSites.get(site)
   if (failingStatus) {
     return new MockResponse('', url.toString(), failingStatus, 'Upstream')
@@ -320,6 +366,7 @@ const runWithMockedFetch = async (fn: () => Promise<void>) => {
   failingLocales = new Set()
   failingSites = new Map()
   forbiddenApiSites = new Set()
+  offsiteRedirects = new Map()
   globalThis.fetch = mockFetch as typeof globalThis.fetch
   try {
     await fn()
@@ -454,6 +501,9 @@ test('still reports a missing HTML-path product as not found', async () => {
     await expect(fetchDlsiteData('RJ00000404')).rejects.toThrow(
       'DLSITE_PRODUCT_NOT_FOUND'
     )
+    // 5 candidate pages and nothing more: a 404 that stayed on dlsite.com must
+    // not fan out into 3 locales x 5 sections of product.json
+    expect(fetchCount).toBe(5)
   })
 })
 
@@ -544,6 +594,50 @@ test('keeps the scraped page when only a secondary edition page fails', async ()
     expect(data.release_date).toBe('2026-01-02')
     expect(data.title_jp).toBe(data.title_default)
     expect(data.title_en).toBeUndefined()
+  })
+})
+
+test('supports BJ catalog entries via the books redirect', async () => {
+  await runWithMockedFetch(async () => {
+    // BJ's only candidate is maniax, which redirects to /books/ — a section with
+    // no DLSITE_PRODUCT_BASE entry and no detectSiteFromUrl branch
+    const data = await fetchDlsiteData('BJ002248')
+    expect(data.rj_code).toBe('BJ002248')
+    expect(data.title_default).toBe('少女地獄 II')
+    expect(data.release_date).toBe('2008-11-15')
+    expect(data.circle_name).toBe('オイスター')
+    expect(data.tags).toBe('羞辱,教育')
+  })
+})
+
+test('falls back to product.json when DLsite redirects the work off-host', async () => {
+  await runWithMockedFetch(async () => {
+    // Some BJ works redirect to comipo.app. A 404 from a third party is not
+    // DLsite saying the work is missing, and 404 is cacheable to callers —
+    // DLsite's own product.json still carries the data.
+    offsiteRedirects = new Map([['BJ01389023', 404]])
+    apiRoutes = {
+      'BJ01389023/zh_CN': API_FOUND,
+      'BJ01389023/ja_JP': API_FOUND,
+      'BJ01389023/en_US': API_FOUND
+    }
+    const data = await fetchDlsiteData('BJ01389023')
+    expect(data.rj_code).toBe('BJ01389023')
+    expect(data.title_default).toBe('孤独少女との50日間')
+    expect(data.release_date).toBe('2025-03-01')
+  })
+})
+
+test('still reports not found when the off-host fallback finds nothing', async () => {
+  await runWithMockedFetch(async () => {
+    offsiteRedirects = new Map([['BJ00000404', 404]])
+    apiRoutes = {}
+    await expect(fetchDlsiteData('BJ00000404')).rejects.toThrow(
+      'DLSITE_PRODUCT_NOT_FOUND'
+    )
+    // 1 page + 3 locales on BJ's single candidate. Without this the test also
+    // passes when the fallback never runs at all
+    expect(fetchCount).toBe(4)
   })
 })
 
