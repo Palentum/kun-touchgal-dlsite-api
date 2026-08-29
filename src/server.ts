@@ -112,12 +112,16 @@ export const handleRequest = async (
       if (controller.signal.aborted) return
       const message =
         err instanceof Error ? err.message : 'DLSITE_API_ERROR_UNKNOWN'
+      // code 的格式问题是调用方的错，不是上游的 —— 落进默认的 500 会让
+      // TouchGal 把一次自己的拼写错误当成本服务故障去重试。
       const status =
-        message === 'DLSITE_PRODUCT_NOT_FOUND'
-          ? 404
-          : message.startsWith('DLsite request failed')
-            ? 502
-            : 500
+        message === 'DLSITE_CODE_INVALID' || message === 'DLSITE_CODE_EMPTY'
+          ? 400
+          : message === 'DLSITE_PRODUCT_NOT_FOUND'
+            ? 404
+            : message.startsWith('DLsite request failed')
+              ? 502
+              : 500
       sendJson(res, status, { error: message }, corsOrigin)
     } finally {
       // 中止路径在 catch 里提前 return，槽位仍然要还回去

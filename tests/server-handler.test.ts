@@ -61,6 +61,37 @@ test.each(AUTHORITY_TARGETS)('target %j routes by pathname', async (target) => {
   expect(state.statusCode).toBe(200)
 })
 
+// 校验发生在 fetchDlsiteData 内部，所以真正要钉的是"请求根本没发出去"。
+test('path-traversal code yields 400 without reaching upstream', async () => {
+  const originalFetch = globalThis.fetch
+  let fetchCount = 0
+  globalThis.fetch = (async () => {
+    fetchCount += 1
+    return new Response('', { status: 200 })
+  }) as typeof globalThis.fetch
+
+  try {
+    const { res, state } = createRes()
+    await handleRequest(
+      createReq('/api/dlsite?code=RJ/../../../../../login/', {}),
+      res
+    )
+    expect(state.statusCode).toBe(400)
+    expect(JSON.parse(state.body)).toEqual({ error: 'DLSITE_CODE_INVALID' })
+    expect(fetchCount).toBe(0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+// 空白 code 通过了 `if (!code)`，trim 后才空 —— 这条以前落进默认的 500。
+test('whitespace-only code yields 400', async () => {
+  const { res, state } = createRes()
+  await handleRequest(createReq('/api/dlsite?code=%20%20', {}), res)
+  expect(state.statusCode).toBe(400)
+  expect(JSON.parse(state.body)).toEqual({ error: 'DLSITE_CODE_EMPTY' })
+})
+
 test('existing routes keep their status codes', async () => {
   const missingCode = createRes()
   await handleRequest(createReq('/api/dlsite', {}), missingCode.res)
