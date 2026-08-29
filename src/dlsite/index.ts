@@ -1,3 +1,4 @@
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import { parseHTML } from 'linkedom'
 import {
   DL_SUPPORTED_LOCALES,
@@ -72,7 +73,25 @@ const toUpstreamError = (err: unknown): unknown =>
 const isUpstreamTimeout = (err: unknown): boolean =>
   err instanceof Error && err.message === UPSTREAM_TIMEOUT_MESSAGE
 
-const parseHtmlDocument = (html: string): Document => parseHTML(html).document
+// parseHTML 是同步的,单份 199KB 页面 4–13ms。上游响应快时,多个请求的解析在
+// 同一条 microtask 链里连续落地,/health 的 socket 事件(poll 阶段)排在后面
+// 被饿死 —— 实测 100 并发、零 RTT 下探针延迟 6.4s,闸门救不了它:解析同步完成,
+// 槽位从未打满。单独 await 一次 setImmediate 也不够:check/timers 阶段会把已
+// 排队的回调批量跑完,100 个就绪解析在同一个 check 阶段里照样背靠背执行(实测
+// /health 仍 6.5s)。串行链才有效 —— 回调执行期间新注册的 immediate 推迟到
+// 下一轮 check,于是每次解析独占一轮循环,两次解析之间必然回到 poll,/health
+// 最多等一次 parse。解析本就在单线程上串行,链只是显式化,不损吞吐。
+let parseChain: Promise<unknown> = Promise.resolve()
+
+const parseHtmlDocument = (html: string): Promise<Document> => {
+  const run = parseChain.then(async () => {
+    await yieldToEventLoop()
+    return parseHTML(html).document
+  })
+  // 前一个解析失败不能斩断链;错误仍经 run 传回它自己的调用者
+  parseChain = run.catch(() => {})
+  return run
+}
 
 const getLocaleFromUrl = (url: string): string | null => {
   try {
@@ -105,7 +124,7 @@ const requestDocument = async (
     const site = detectSiteFromUrl(finalUrl) ?? fallbackSite
 
     return {
-      document: parseHtmlDocument(html),
+      document: await parseHtmlDocument(html),
       site,
       url: finalUrl
     }
