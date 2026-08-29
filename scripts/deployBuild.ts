@@ -3,7 +3,7 @@ import { execSync } from 'child_process'
 try {
   console.log('Executing the commands...')
 
-  execSync('git pull && pnpm build && pnpm start', {
+  execSync('git pull && pnpm install --frozen-lockfile && pnpm build && pnpm start', {
     stdio: 'inherit'
   })
 } catch (error) {
