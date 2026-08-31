@@ -38,6 +38,37 @@ const hangingFetch = (_input: RequestInfo | URL, init?: RequestInit) =>
     )
   })
 
+const SPA_SHELL_HTML =
+  '<!doctype html><html><body><div id="app"></div></body></html>'
+
+// 页面立即 200（SPA 壳，逼进 product.json 路径）；product.json 也立即 200，
+// 但 body 流挂死到信号中止。json() 阶段的超时是 DOMException，必须原样穿过
+// fetchProductApi 的内层 catch、命中既有超时映射 —— 误判成 non-JSON 会让
+// 每个 locale 继续探完 5 个版块，每个版块再烧一个 FETCH_TIMEOUT_MS。
+const hangingJsonBodyFetch = (input: RequestInfo | URL, init?: RequestInit) => {
+  fetchCount += 1
+  const url =
+    typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url
+  if (!url.includes('/api/=/product.json')) {
+    return Promise.resolve(new Response(SPA_SHELL_HTML, { status: 200 }))
+  }
+  const signal = init?.signal
+  return Promise.resolve({
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    url,
+    json: () =>
+      new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason))
+      })
+  } as unknown as Response)
+}
+
 // Every hop answers, just slowly — exercises the budget against the serial
 // candidate loop rather than a single stuck request
 const slow404Fetch = (_input: RequestInfo | URL, init?: RequestInit) =>
@@ -107,6 +138,17 @@ test('a hung upstream request is aborted by the per-hop timeout', async () => {
     // Probing on would burn another FETCH_TIMEOUT_MS per section and hold a gate
     // slot for the whole TOTAL_TIMEOUT_MS instead of one hop
     expect(fetchCount).toBe(1)
+  })
+})
+
+test('a stalled product.json body maps to upstream timeout, not non-JSON', async () => {
+  await runWith(hangingJsonBodyFetch, { fetch: 20, total: 10_000 }, async () => {
+    await expect(fetchDlsiteData('RJ01527759')).rejects.toThrow(
+      'DLsite request failed: upstream timeout'
+    )
+    // 1 个壳页 + 3 locale x 1 版块：json() 阶段的超时同样立即终止该 locale 的
+    // 候选循环。丢掉 DOMException 放行时这里是 16（3 locale 各探完 5 版块）。
+    expect(fetchCount).toBe(4)
   })
 })
 

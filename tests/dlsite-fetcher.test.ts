@@ -262,6 +262,9 @@ let failingSites = new Map<string, number>()
 // Same idea for product.json, 403 only. Kept separate from failingSites because
 // reaching the JSON path at all requires the section's shell page to answer 200.
 let forbiddenApiSites = new Set<string>()
+// 该版块的 product.json 以 200+HTML 应答（WAF 挑战页/维护页）。status 维度表达
+// 不了这种失败：response.ok 通过，问题要到 response.json() 解析时才暴露。
+let htmlApiSites = new Set<string>()
 // code → status a non-dlsite.com landing answers with. DLsite redirects some BJ
 // works off-host entirely; fetch follows that internally, so a single request
 // comes back carrying the third party's status and URL.
@@ -292,6 +295,14 @@ const mockFetch = async (
   if (url.pathname.endsWith('/api/=/product.json')) {
     if (forbiddenApiSites.has(url.pathname.split('/')[1])) {
       return new MockResponse('', url.toString(), 403, 'Forbidden')
+    }
+    if (htmlApiSites.has(url.pathname.split('/')[1])) {
+      return new MockResponse(
+        '<!doctype html><html>challenge</html>',
+        url.toString(),
+        200,
+        'OK'
+      )
     }
     const workno = url.searchParams.get('workno') ?? ''
     const locale = url.searchParams.get('locale') ?? ''
@@ -366,6 +377,7 @@ const runWithMockedFetch = async (fn: () => Promise<void>) => {
   failingLocales = new Set()
   failingSites = new Map()
   forbiddenApiSites = new Set()
+  htmlApiSites = new Set()
   offsiteRedirects = new Map()
   globalThis.fetch = mockFetch as typeof globalThis.fetch
   try {
@@ -552,6 +564,35 @@ test('keeps probing product.json candidates when one section answers 403', async
     }
     // This path is the only one SPA/aix works ever take — a 403 on maniax's
     // product.json used to make them permanently unreachable
+    const data = await fetchDlsiteData('RJ01999001')
+    expect(data.title_default).toBe('孤独少女との50日間')
+    expect(data.release_date).toBe('2025-03-01')
+  })
+})
+
+test('reports a 200+HTML product.json as an upstream failure, not a 500', async () => {
+  await runWithMockedFetch(async () => {
+    htmlApiSites = new Set(['maniax', 'ai', 'aix', 'appx', 'girls'])
+    // 原始 SyntaxError 既不匹配 server.ts 的 502 前缀（落进 500），又把上游
+    // 响应体前缀回显给客户端。全锚定正则同时钉死两点：前缀正确、消息里
+    // 没有响应体片段；(maniax) 钉死 ??= 保住的是首个候选的失败。
+    await expect(fetchDlsiteData('RJ01999001')).rejects.toThrow(
+      /^DLsite request failed: non-JSON product\.json \(maniax\)$/
+    )
+    // 1 个壳页 + 3 locale x 5 版块：解析失败和 403 一样继续探测，不提前放弃
+    expect(fetchCount).toBe(16)
+  })
+})
+
+test('keeps probing product.json candidates when one section answers 200+HTML', async () => {
+  await runWithMockedFetch(async () => {
+    htmlApiSites = new Set(['maniax'])
+    apiRoutes = {
+      'RJ01999001/zh_CN': API_FOUND,
+      'RJ01999001/ja_JP': API_FOUND,
+      'RJ01999001/en_US': API_FOUND
+    }
+    // maniax 的挑战页和它的 403 同类：瞬时返回、单版块局部，不许一票否决
     const data = await fetchDlsiteData('RJ01999001')
     expect(data.title_default).toBe('孤独少女との50日間')
     expect(data.release_date).toBe('2025-03-01')

@@ -238,7 +238,17 @@ const fetchProductApi = async (
         )
       }
 
-      const data = (await response.json()) as ApiProductData[]
+      let data: ApiProductData[]
+      try {
+        data = (await response.json()) as ApiProductData[]
+      } catch (err) {
+        // 中止/超时打断 body 流时是 DOMException，放行给外层走既有的超时映射。
+        // 其余解析失败（WAF 挑战页/维护页的 200+HTML、body 中途断流）是上游
+        // 故障：原始 SyntaxError 绕过 server.ts 的 502 前缀匹配落进 500，还把
+        // 上游响应体前缀回显给客户端 —— 消息必须自建，不能携带解析器文本。
+        if (err instanceof DOMException) throw err
+        throw new Error(`DLsite request failed: non-JSON product.json (${site})`)
+      }
       if (data?.[0]) return data[0]
     } catch (err) {
       // 一个版块 403/429/5xx 不代表作品不在别处：裁决时机是候选用尽之后，
