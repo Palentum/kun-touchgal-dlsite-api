@@ -687,6 +687,26 @@ test('keeps the response when only a secondary locale fails', async () => {
   })
 })
 
+test('falls back to jp data when the cn locale carries no entry', async () => {
+  await runWithMockedFetch(async () => {
+    apiRoutes = {
+      'RJ01999001/ja_JP': API_FOUND
+    }
+    // zh_CN 缺席时 primary 必须落到 dataJp —— 没有这条用例，`dataCn ?? dataJp`
+    // 变异成 `dataCn!` 全套仍然绿灯（实测存活），jp-only 作品在生产直接崩
+    const data = await fetchDlsiteData('RJ01999001')
+    expect(data.title_default).toBe('孤独少女との50日間')
+    expect(data.title_jp).toBe('孤独少女との50日間')
+    expect(data.title_en).toBeUndefined()
+    expect(data.release_date).toBe('2025-03-01')
+    // 钉住 circle_link 的 maker_id 段：toContain('/aix/circle/profile') 只
+    // 覆盖 site 段，maker_id 拼错时曾无测试转红
+    expect(data.circle_link).toBe(
+      'https://www.dlsite.com/aix/circle/profile/=/maker_id/RG12345.html'
+    )
+  })
+})
+
 test('keeps the scraped page when only a secondary edition page fails', async () => {
   await runWithMockedFetch(async () => {
     failingLocales = new Set(['en_US'])
