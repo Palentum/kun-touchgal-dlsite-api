@@ -92,6 +92,14 @@ test('whitespace-only code yields 400', async () => {
   expect(JSON.parse(state.body)).toEqual({ error: 'DLSITE_CODE_EMPTY' })
 })
 
+// HEAD 是多数拨测和 LB 健康检查的默认方法，修复前落进兜底 404。
+// 响应体由 node:http 对 HEAD 自动丢弃，这里只需钉状态码。
+test('HEAD /health yields 200', async () => {
+  const { res, state } = createRes()
+  await handleRequest(createReq('/health', {}, 'HEAD'), res)
+  expect(state.statusCode).toBe(200)
+})
+
 test('existing routes keep their status codes', async () => {
   const missingCode = createRes()
   await handleRequest(createReq('/api/dlsite', {}), missingCode.res)

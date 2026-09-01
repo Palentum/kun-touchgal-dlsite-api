@@ -76,7 +76,13 @@ export const handleRequest = async (
     return
   }
 
-  if (req.method === 'GET' && url.pathname === '/health') {
+  // HEAD 是拨测/LB 健康检查的默认方法；node:http 对 HEAD 自动丢弃响应体，
+  // sendJson 无需感知。/api/dlsite 刻意不放行 HEAD——为丢弃的响应体烧一次
+  // 最长 30 s 的抓取加一个闸门槽位不值得。
+  if (
+    (req.method === 'GET' || req.method === 'HEAD') &&
+    url.pathname === '/health'
+  ) {
     sendJson(res, 200, { status: 'ok' }, corsOrigin)
     return
   }
