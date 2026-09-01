@@ -59,11 +59,35 @@ const UPSTREAM_TIMEOUT_MESSAGE = 'DLsite request failed: upstream timeout'
 // falls through server.ts's message match to 500, and folding it into
 // DLSITE_PRODUCT_NOT_FOUND would be worse still — 404 is cacheable, so one
 // upstream stall would record a real work as permanently missing.
-const toUpstreamError = (err: unknown): unknown =>
-  err instanceof DOMException &&
-  (err.name === 'TimeoutError' || err.name === 'AbortError')
-    ? new Error(UPSTREAM_TIMEOUT_MESSAGE)
-    : err
+const toUpstreamError = (err: unknown): unknown => {
+  if (
+    err instanceof DOMException &&
+    (err.name === 'TimeoutError' || err.name === 'AbortError')
+  ) {
+    return new Error(UPSTREAM_TIMEOUT_MESSAGE)
+  }
+  // 传输层失败（DNS/TLS/连接被拒/body 断流）是 TypeError 不是 DOMException，
+  // 透传会绕过 server.ts 的 502 前缀匹配落进 500。undici 对这类失败只用
+  // 'fetch failed' / 'terminated' 两个字面量 —— 谓词必须收窄到 message，
+  // try 块内其他 TypeError（编程 bug）不能被标成上游故障。它和 403 一样
+  // 即时返回，所以不并入超时消息：isUpstreamTimeout 对它保持 false，
+  // 候选探测继续，裁决仍在候选耗尽后。底层错误码挂在 cause 上，只嵌
+  // code 不嵌消息文本，与 non-JSON product.json 的不回显原则一致。
+  if (
+    err instanceof TypeError &&
+    (err.message === 'fetch failed' || err.message === 'terminated')
+  ) {
+    const cause = err.cause
+    const code =
+      cause instanceof Error &&
+      'code' in cause &&
+      typeof cause.code === 'string'
+        ? ` (${cause.code})`
+        : ''
+    return new Error(`DLsite request failed: ${err.message}${code}`)
+  }
+  return err
+}
 
 // 一个版块 403 只是它自己的边缘节点拒绝了这次请求，与其余版块无关，而且立刻
 // 返回 —— 继续探测几乎零成本。超时不同：它既是"上游整体不健康"的信号，又会
@@ -247,7 +271,9 @@ const fetchProductApi = async (
         // 故障：原始 SyntaxError 绕过 server.ts 的 502 前缀匹配落进 500，还把
         // 上游响应体前缀回显给客户端 —— 消息必须自建，不能携带解析器文本。
         if (err instanceof DOMException) throw err
-        throw new Error(`DLsite request failed: non-JSON product.json (${site})`)
+        throw new Error(
+          `DLsite request failed: non-JSON product.json (${site})`
+        )
       }
       if (data?.[0]) return data[0]
     } catch (err) {

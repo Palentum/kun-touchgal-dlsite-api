@@ -55,6 +55,18 @@ class MockResponse implements Response {
   }
 }
 
+// headers 之后连接被重置：status 维度表达不了这种失败 —— response.ok 已经
+// 通过，问题要到 text() 读 body 时才暴露，undici 抛 TypeError('terminated')
+class TerminatedBodyResponse extends MockResponse {
+  async text(): Promise<string> {
+    throw Object.assign(new TypeError('terminated'), {
+      cause: Object.assign(new Error('other side closed'), {
+        code: 'UND_ERR_SOCKET'
+      })
+    })
+  }
+}
+
 const metaDir = resolve(process.cwd(), 'meta')
 
 const readMeta = (filename: string) =>
@@ -265,6 +277,12 @@ let forbiddenApiSites = new Set<string>()
 // 该版块的 product.json 以 200+HTML 应答（WAF 挑战页/维护页）。status 维度表达
 // 不了这种失败：response.ok 通过，问题要到 response.json() 解析时才暴露。
 let htmlApiSites = new Set<string>()
+// 该版块的产品页在传输层失败（DNS/TLS/ECONNREFUSED）：undici 把它们统一抛成
+// TypeError('fetch failed')，底层错误挂在 cause 上 —— 没有 HTTP status，
+// failingSites 的 status 维度表达不了
+let transportFailingSites = new Set<string>()
+// 该版块的产品页 200 后 body 中途断流，见 TerminatedBodyResponse
+let terminatedBodySites = new Set<string>()
 // code → status a non-dlsite.com landing answers with. DLsite redirects some BJ
 // works off-host entirely; fetch follows that internally, so a single request
 // comes back carrying the third party's status and URL.
@@ -339,6 +357,16 @@ const mockFetch = async (
   if (failingStatus) {
     return new MockResponse('', url.toString(), failingStatus, 'Upstream')
   }
+  if (transportFailingSites.has(site)) {
+    throw Object.assign(new TypeError('fetch failed'), {
+      cause: Object.assign(new Error('getaddrinfo ENOTFOUND www.dlsite.com'), {
+        code: 'ENOTFOUND'
+      })
+    })
+  }
+  if (terminatedBodySites.has(site)) {
+    return new TerminatedBodyResponse('', url.toString())
+  }
   const key = `${site}/${code.toUpperCase()}` as RouteKey
   const route = routeMap[key]
   if (!route) {
@@ -376,6 +404,8 @@ const runWithMockedFetch = async (fn: () => Promise<void>) => {
   apiRoutes = {}
   failingLocales = new Set()
   failingSites = new Map()
+  transportFailingSites = new Set()
+  terminatedBodySites = new Set()
   forbiddenApiSites = new Set()
   htmlApiSites = new Set()
   offsiteRedirects = new Map()
@@ -503,6 +533,40 @@ test('surfaces the first failing candidate, not the last', async () => {
     ])
     await expect(fetchDlsiteData('RJ202395')).rejects.toThrow(
       /^DLsite request failed: 429/
+    )
+  })
+})
+
+test('maps transport-layer failures to the 502 prefix, not a raw fetch failed', async () => {
+  await runWithMockedFetch(async () => {
+    transportFailingSites = new Set(['maniax', 'ai', 'aix', 'appx', 'girls'])
+    // TypeError('fetch failed') 原样透传会绕过 server.ts 的前缀匹配落进 500，
+    // 把「DLsite 不可达」报成本服务自身的故障。全锚定正则同时钉死：前缀
+    // 正确、消息只嵌 cause.code、不携带底层错误文本。
+    await expect(fetchDlsiteData('RJ202395')).rejects.toThrow(
+      /^DLsite request failed: fetch failed \(ENOTFOUND\)$/
+    )
+    // 传输层失败即时返回，和 403 一样继续探测 —— 5 次，不是超时式的 1 次
+    expect(fetchCount).toBe(5)
+  })
+})
+
+test('keeps probing candidates when the first section fails at the transport layer', async () => {
+  await runWithMockedFetch(async () => {
+    transportFailingSites = new Set(['maniax'])
+    const data = await fetchDlsiteData('RJ202395')
+    expect(data.title_default).toBe('王子様の耳元でおやすみ')
+    expect(data.circle_link).toContain('/girls/circle/profile')
+  })
+})
+
+test('maps a body stream cut mid-read to the 502 prefix', async () => {
+  await runWithMockedFetch(async () => {
+    terminatedBodySites = new Set(['maniax', 'ai', 'aix', 'appx', 'girls'])
+    // 200 之后断流走的是 text() 的 TypeError('terminated')，与 fetch 本身
+    // 的失败是两条路径，必须分别钉住
+    await expect(fetchDlsiteData('RJ202395')).rejects.toThrow(
+      /^DLsite request failed: terminated \(UND_ERR_SOCKET\)$/
     )
   })
 })
