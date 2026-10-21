@@ -26,8 +26,8 @@
     "tsx": "^4.22.4",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.52.0",
-    "vite": "^8.0.16",
-    "vitest": "^4.1.8"
+    "vite": "^8.3.4",
+    "vitest": "^4.1.12"
   },
   "dependencies": {
     "linkedom": "^0.18.12"
