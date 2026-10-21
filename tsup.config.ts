@@ -3,7 +3,7 @@ import { defineConfig } from 'tsup'
 export default defineConfig({
   entry: ['src/index.ts'],
   format: ['esm'],
-  target: 'node20',
+  target: 'node26',
   splitting: false,
   sourcemap: false,
   // clean 必须为 false：构建失败时保留上一版 dist/index.js 作回滚件，
